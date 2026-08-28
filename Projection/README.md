@@ -33,8 +33,9 @@ z' = z * scale
 ```
 
 The result `(x', y', z')` is stored in `Wireframe3D`; it is not drawn directly as
-2D coordinates. The renderer later converts it to MonoGame `Vector3` and uses a
-normal 3D camera plus MonoGame's 3D perspective projection to reach the screen.
+2D coordinates. The renderer later converts it to MonoGame `Vector3`, reuses the
+same projected indices for cell faces, and uses a normal 3D camera plus
+MonoGame's 3D perspective projection to reach the screen.
 
 Increasing `d` magnifies the projected 3D representation. Moving or rotating
 Camera4D changes camera-space W and therefore changes the actual 4D perspective.

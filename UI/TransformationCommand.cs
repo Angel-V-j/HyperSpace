@@ -19,5 +19,10 @@ public enum TransformationCommand
     MovePositiveW,
     MoveNegativeW,
     ResetObject,
-    ResetCamera
+    ResetCamera,
+    ToggleGrid,
+    ToggleAxes,
+    ToggleCells,
+    ToggleEdges,
+    ToggleVertices
 }

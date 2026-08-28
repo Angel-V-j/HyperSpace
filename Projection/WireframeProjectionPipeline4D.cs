@@ -37,8 +37,12 @@ public sealed class WireframeProjectionPipeline4D
             var cameraPoint = camera.WorldToCameraSpace(worldPoint);
 
             vertices[index] = projector.TryProject(cameraPoint, out var projectedPoint)
-                ? new ProjectedVertex3D(projectedPoint, cameraPoint.W, IsVisible: true)
-                : ProjectedVertex3D.Hidden(cameraPoint.W);
+                ? new ProjectedVertex3D(
+                    projectedPoint,
+                    cameraPoint.W,
+                    sourceVertices[index].W,
+                    IsVisible: true)
+                : ProjectedVertex3D.Hidden(cameraPoint.W, sourceVertices[index].W);
         }
 
         return new Wireframe3D(vertices, sourceEdges);

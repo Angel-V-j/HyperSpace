@@ -16,6 +16,7 @@ public sealed class DebugOverlayRenderer : IDisposable
 {
     private readonly SpriteBatch _spriteBatch;
     private readonly SpriteFont _font;
+    private readonly Texture2D _pixel;
     private readonly StringBuilder _text = new(capacity: 1024);
 
     private double _sampleTime;
@@ -26,6 +27,8 @@ public sealed class DebugOverlayRenderer : IDisposable
     {
         _spriteBatch = new SpriteBatch(graphicsDevice);
         _font = font;
+        _pixel = new Texture2D(graphicsDevice, 1, 1);
+        _pixel.SetData([Color.White]);
     }
 
     public void UpdateTiming(GameTime gameTime)
@@ -47,18 +50,42 @@ public sealed class DebugOverlayRenderer : IDisposable
         PerspectiveProjector4D projector,
         OrbitCamera3D camera3D,
         Wireframe3D wireframe,
-        TransformationAnimator4D animator)
+        TransformationAnimator4D animator,
+        DisplayOptions displayOptions)
     {
-        BuildText(objectTransform, camera4D, projector, camera3D, wireframe, animator);
+        BuildText(
+            objectTransform,
+            camera4D,
+            projector,
+            camera3D,
+            wireframe,
+            animator,
+            displayOptions);
 
         _spriteBatch.Begin(
             SpriteSortMode.Deferred,
-            BlendState.AlphaBlend,
+            BlendState.NonPremultiplied,
             SamplerState.LinearClamp,
             DepthStencilState.None,
             RasterizerState.CullNone);
 
-        var position = new Vector2(14.0f, 12.0f);
+        var position = new Vector2(14.0f, 31.0f);
+        var textSize = _font.MeasureString(_text);
+        var panelBounds = new Rectangle(
+            8,
+            8,
+            (int)Math.Ceiling(textSize.X) + 20,
+            (int)Math.Ceiling(textSize.Y) + 31);
+        _spriteBatch.Draw(_pixel, panelBounds, new Color(9, 14, 27, 218));
+        _spriteBatch.Draw(
+            _pixel,
+            new Rectangle(panelBounds.X, panelBounds.Y, 3, panelBounds.Height),
+            VisualizationPalette.ObjectInfoAccent);
+        _spriteBatch.DrawString(
+            _font,
+            "OBJECT INFO / CAMERA",
+            new Vector2(14.0f, 11.0f),
+            VisualizationPalette.ObjectInfoAccent);
         _spriteBatch.DrawString(_font, _text, position + new Vector2(2.0f), Color.Black * 0.8f);
         _spriteBatch.DrawString(_font, _text, position, new Color(225, 235, 255));
         _spriteBatch.End();
@@ -66,6 +93,7 @@ public sealed class DebugOverlayRenderer : IDisposable
 
     public void Dispose()
     {
+        _pixel.Dispose();
         _spriteBatch.Dispose();
     }
 
@@ -75,7 +103,8 @@ public sealed class DebugOverlayRenderer : IDisposable
         PerspectiveProjector4D projector,
         OrbitCamera3D camera3D,
         Wireframe3D wireframe,
-        TransformationAnimator4D animator)
+        TransformationAnimator4D animator,
+        DisplayOptions displayOptions)
     {
         _text.Clear();
         AppendFormat("FPS {0,5:0.0}   Visible {1}/16 vertices, {2}/32 edges\n",
@@ -113,6 +142,14 @@ public sealed class DebugOverlayRenderer : IDisposable
         {
             _text.AppendLine("Animation  idle");
         }
+
+        AppendFormat(
+            "Layers  Grid {0}  Axes {1}  Cells {2}  Edges {3}  Vertices {4}\n",
+            OnOff(displayOptions.ShowGrid),
+            OnOff(displayOptions.ShowAxes),
+            OnOff(displayOptions.ShowCells),
+            OnOff(displayOptions.ShowEdges),
+            OnOff(displayOptions.ShowVertices));
     }
 
     private void AppendRotation(string label, Rotation4D rotation)
@@ -134,4 +171,6 @@ public sealed class DebugOverlayRenderer : IDisposable
     }
 
     private static double Degrees(double radians) => radians * 180.0 / Math.PI;
+
+    private static string OnOff(bool value) => value ? "ON" : "OFF";
 }

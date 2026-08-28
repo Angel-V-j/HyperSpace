@@ -29,6 +29,7 @@ public sealed class SandboxGame : Game
     private readonly OrbitCamera3D _camera3D = new();
     private readonly SandboxInputController _input = new();
     private readonly TransformationAnimator4D _transformAnimator = new();
+    private readonly DisplayOptions _displayOptions = new();
 
     private Wireframe3D _tesseractWireframe3D;
     private Wireframe3D _referenceGridWireframe3D;
@@ -41,8 +42,8 @@ public sealed class SandboxGame : Game
     {
         _graphics = new GraphicsDeviceManager(this)
         {
-            PreferredBackBufferWidth = 1000,
-            PreferredBackBufferHeight = 480,
+            PreferredBackBufferWidth = 1280,
+            PreferredBackBufferHeight = 720,
             SynchronizeWithVerticalRetrace = true
         };
 
@@ -123,7 +124,7 @@ public sealed class SandboxGame : Game
             _activePanelCommand = null;
         }
 
-        _controlPanel?.SetActiveCommand(_activePanelCommand);
+        _controlPanel?.SetActiveState(_activePanelCommand, _displayOptions);
 
         _tesseractWireframe3D = _projectionPipeline.Project(
             _tesseract,
@@ -159,21 +160,48 @@ public sealed class SandboxGame : Game
         _wireframeRenderer?.DrawReferenceGrid(
             GraphicsDevice,
             _referenceGridWireframe3D,
-            _camera3D);
-        _wireframeRenderer?.Draw(GraphicsDevice, _tesseractWireframe3D, _camera3D);
+            _camera3D,
+            _displayOptions.ShowGrid,
+            _displayOptions.ShowAxes);
+
+        if (_displayOptions.ShowCells)
+        {
+            _wireframeRenderer?.DrawCells(
+                GraphicsDevice,
+                _tesseractWireframe3D,
+                _tesseract.Cells,
+                _camera3D);
+        }
+
+        if (_displayOptions.ShowEdges)
+        {
+            _wireframeRenderer?.Draw(GraphicsDevice, _tesseractWireframe3D, _camera3D);
+        }
+
+        if (_displayOptions.ShowVertices)
+        {
+            _wireframeRenderer?.DrawVertices(
+                GraphicsDevice,
+                _tesseractWireframe3D,
+                _camera3D);
+        }
+
         _debugOverlay?.Draw(
             _tesseractTransform,
             _camera4D,
             _projector4D,
             _camera3D,
             _tesseractWireframe3D,
-            _transformAnimator);
+            _transformAnimator,
+            _displayOptions);
 
         GraphicsDevice.Viewport = fullViewport;
         _controlPanel?.Draw(
             fullViewport.Width,
             fullViewport.Height,
-            _transformAnimator);
+            _transformAnimator,
+            _displayOptions,
+            _tesseract.Cells);
 
         base.Draw(gameTime);
     }
@@ -188,6 +216,11 @@ public sealed class SandboxGame : Game
 
     private void HandlePanelCommand(TransformationCommand command)
     {
+        if (TryHandleDisplayCommand(command))
+        {
+            return;
+        }
+
         if (command == TransformationCommand.ResetObject)
         {
             _transformAnimator.Cancel();
@@ -246,6 +279,30 @@ public sealed class SandboxGame : Game
         if (started)
         {
             _activePanelCommand = command;
+        }
+    }
+
+    private bool TryHandleDisplayCommand(TransformationCommand command)
+    {
+        switch (command)
+        {
+            case TransformationCommand.ToggleGrid:
+                _displayOptions.ToggleGrid();
+                return true;
+            case TransformationCommand.ToggleAxes:
+                _displayOptions.ToggleAxes();
+                return true;
+            case TransformationCommand.ToggleCells:
+                _displayOptions.ToggleCells();
+                return true;
+            case TransformationCommand.ToggleEdges:
+                _displayOptions.ToggleEdges();
+                return true;
+            case TransformationCommand.ToggleVertices:
+                _displayOptions.ToggleVertices();
+                return true;
+            default:
+                return false;
         }
     }
 }

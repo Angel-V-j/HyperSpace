@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using HyperSpace.Geometry;
 using HyperSpace.Input;
@@ -13,6 +14,7 @@ using Microsoft.Xna.Framework.Input;
 var checks = new (string Name, Action Run)[]
 {
     ("Tesseract topology", CheckTesseractTopology),
+    ("Tesseract cubic cells", CheckTesseractCells),
     ("4D reference grid", CheckReferenceGrid),
     ("Six plane rotations", CheckPlaneRotations),
     ("Rotation inverse", CheckRotationInverse),
@@ -21,6 +23,7 @@ var checks = new (string Name, Action Run)[]
     ("Projection safety", CheckProjectionSafety),
     ("Animated 4D transformations", CheckTransformationAnimation),
     ("Minimal UI button states", CheckUiButtonStates),
+    ("Display layer state", CheckDisplayLayerState),
     ("Interactive input mapping", CheckInputMapping)
 };
 
@@ -45,6 +48,7 @@ static void CheckTesseractTopology()
     Require(tesseract.Edges.Count == 32, "A tesseract must have 32 edges.");
 
     var degrees = new int[tesseract.Vertices.Count];
+    var edgeCountsByAxis = new int[4];
 
     foreach (var edge in tesseract.Edges)
     {
@@ -57,11 +61,87 @@ static void CheckTesseractTopology()
             Different(start.W, end.W);
 
         Require(changedCoordinates == 1, "Each edge must change exactly one coordinate.");
+        var edgeAxis = edge.Axis ?? throw new InvalidOperationException(
+            "Every tesseract edge must record its 4D direction.");
+        Require(
+            GetCoordinate(start, edgeAxis) != GetCoordinate(end, edgeAxis),
+            "The semantic edge axis must be the coordinate that changes.");
+        edgeCountsByAxis[(int)edgeAxis]++;
         degrees[edge.Start]++;
         degrees[edge.End]++;
     }
 
     Require(degrees.All(degree => degree == 4), "Every tesseract vertex must have degree four.");
+    Require(edgeCountsByAxis.All(count => count == 8),
+        "A tesseract must have eight edges in each X/Y/Z/W direction.");
+}
+
+static void CheckTesseractCells()
+{
+    var tesseract = new Tesseract4D();
+    Require(tesseract.Cells.Count == 8, "A tesseract boundary must contain eight cubic cells.");
+
+    var vertexMembership = new int[tesseract.Vertices.Count];
+    var faceMembership = new Dictionary<string, int>();
+    var labels = new HashSet<string>();
+
+    foreach (var cell in tesseract.Cells)
+    {
+        Require(labels.Add(cell.Label), "Each fixed-axis/sign cell label must be unique.");
+        Require(cell.FixedSign is -1 or 1, "Cell sign must be either -1 or +1.");
+        Require(cell.VertexIndices.Count == 8, "Each cubic cell must contain eight vertices.");
+        Require(cell.VertexIndices.Distinct().Count() == 8,
+            "A cubic cell cannot repeat a vertex.");
+        Require(cell.Faces.Count == 6, "Each cubic cell must contain six square faces.");
+
+        foreach (var vertexIndex in cell.VertexIndices)
+        {
+            var vertex = tesseract.Vertices[vertexIndex];
+            RequireNear(
+                GetCoordinate(vertex, cell.FixedAxis),
+                cell.FixedSign,
+                1e-12,
+                $"Cell {cell.Label} must fix its declared coordinate.");
+            vertexMembership[vertexIndex]++;
+        }
+
+        foreach (var face in cell.Faces)
+        {
+            var indices = new[] { face.A, face.B, face.C, face.D };
+            Require(indices.Distinct().Count() == 4, "A square face must contain four vertices.");
+            Require(indices.All(cell.VertexIndices.Contains),
+                "Every cell face vertex must belong to that cell.");
+
+            Require(ChangedCoordinateCount(
+                tesseract.Vertices[face.A],
+                tesseract.Vertices[face.B]) == 1,
+                "Consecutive square-face vertices A-B must share an edge.");
+            Require(ChangedCoordinateCount(
+                tesseract.Vertices[face.B],
+                tesseract.Vertices[face.C]) == 1,
+                "Consecutive square-face vertices B-C must share an edge.");
+            Require(ChangedCoordinateCount(
+                tesseract.Vertices[face.C],
+                tesseract.Vertices[face.D]) == 1,
+                "Consecutive square-face vertices C-D must share an edge.");
+            Require(ChangedCoordinateCount(
+                tesseract.Vertices[face.D],
+                tesseract.Vertices[face.A]) == 1,
+                "Consecutive square-face vertices D-A must share an edge.");
+
+            var key = string.Join(",", indices.OrderBy(index => index));
+            faceMembership[key] = faceMembership.GetValueOrDefault(key) + 1;
+        }
+    }
+
+    Require(labels.SetEquals(["X-", "X+", "Y-", "Y+", "Z-", "Z+", "W-", "W+"]),
+        "The eight cells must be X-/X+/Y-/Y+/Z-/Z+/W-/W+.");
+    Require(vertexMembership.All(count => count == 4),
+        "Every tesseract vertex must belong to four cubic boundary cells.");
+    Require(faceMembership.Count == 24,
+        "A tesseract must contain 24 unique square faces.");
+    Require(faceMembership.Values.All(count => count == 2),
+        "Every square face must be shared by exactly two cubic cells.");
 }
 
 static void CheckReferenceGrid()
@@ -196,6 +276,10 @@ static void CheckProjectionSafety()
 
     Require(wireframe.VisibleVertexCount == 16, "The default tesseract must be fully projectable.");
     Require(wireframe.VisibleEdgeCount == 32, "The default tesseract must expose all edges.");
+    Require(wireframe.Vertices.Count(vertex => vertex.SourceW < 0.0) == 8,
+        "The projected representation must retain eight source W- vertices.");
+    Require(wireframe.Vertices.Count(vertex => vertex.SourceW > 0.0) == 8,
+        "The projected representation must retain eight source W+ vertices.");
 
     var cameraInsideTesseract = new Camera4D();
     cameraInsideTesseract.MoveWorld(new Vector4D(0.0, 0.0, 0.0, 4.0));
@@ -361,6 +445,44 @@ static void CheckUiButtonStates()
         "A disabled button must ignore rapid input during another animation.");
     Require(!button.IsHovered && !button.IsPressed,
         "Disabled buttons must not retain hover or pressed feedback.");
+}
+
+static void CheckDisplayLayerState()
+{
+    var options = new DisplayOptions();
+    Require(options.ShowGrid && options.ShowAxes && options.ShowCells &&
+        options.ShowEdges && options.ShowVertices,
+        "Every educational display layer must be enabled by default.");
+
+    options.ToggleGrid();
+    options.ToggleAxes();
+    options.ToggleCells();
+    options.ToggleEdges();
+    options.ToggleVertices();
+    Require(!options.ShowGrid && !options.ShowAxes && !options.ShowCells &&
+        !options.ShowEdges && !options.ShowVertices,
+        "Every display layer must toggle independently.");
+
+    Require(VisualizationPalette.CellColorCount == 8,
+        "The cell legend and renderer must share exactly eight colors.");
+    Require(
+        VisualizationPalette.CellSurfaceAlpha >= 0.15f &&
+        VisualizationPalette.CellSurfaceAlpha <= 0.30f,
+        "Cell alpha must remain in the intended translucent range.");
+    Require(Enumerable.Range(0, VisualizationPalette.CellColorCount)
+        .Select(VisualizationPalette.CellColor)
+        .Distinct()
+        .Count() == 8,
+        "All eight cell colors must be distinct.");
+    Require(new[]
+    {
+        VisualizationPalette.EdgeX,
+        VisualizationPalette.EdgeY,
+        VisualizationPalette.EdgeZ,
+        VisualizationPalette.EdgeW
+    }.Distinct().Count() == 4, "X/Y/Z/W edge colors must be distinct.");
+    Require(VisualizationPalette.VertexNegativeW != VisualizationPalette.VertexPositiveW,
+        "W- and W+ vertex markers must use different colors.");
 }
 
 static void CheckInputMapping()
@@ -624,6 +746,22 @@ static MouseState MouseAt(
         ButtonState.Released);
 
 static int Different(double left, double right) => left == right ? 0 : 1;
+
+static int ChangedCoordinateCount(Vector4D left, Vector4D right) =>
+    Different(left.X, right.X) +
+    Different(left.Y, right.Y) +
+    Different(left.Z, right.Z) +
+    Different(left.W, right.W);
+
+static double GetCoordinate(Vector4D vector, CoordinateAxis4D axis) =>
+    axis switch
+    {
+        CoordinateAxis4D.X => vector.X,
+        CoordinateAxis4D.Y => vector.Y,
+        CoordinateAxis4D.Z => vector.Z,
+        CoordinateAxis4D.W => vector.W,
+        _ => throw new ArgumentOutOfRangeException(nameof(axis), axis, null)
+    };
 
 static void Require(bool condition, string message)
 {
