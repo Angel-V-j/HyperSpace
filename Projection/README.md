@@ -35,7 +35,13 @@ z' = z * scale
 The result `(x', y', z')` is stored in `Wireframe3D`; it is not drawn directly as
 2D coordinates. The renderer later converts it to MonoGame `Vector3`, reuses the
 same projected indices for cell faces, and uses a normal 3D camera plus
-MonoGame's 3D perspective projection to reach the screen.
+MonoGame's 3D perspective projection to reach the screen. Tesseract, sampled
+hypersphere, simplex, irregular polytope, and the sampled 4D spiral all use this exact path through the
+common `IGeometry4D` overload; object selection is not a special projection mode.
+
+For visualization metadata only, each projected vertex also retains its local
+source W and transformed world W. The spiral renderer uses world W for its
+gradient. Neither value participates in, or modifies, the perspective formula.
 
 Increasing `d` magnifies the projected 3D representation. Moving or rotating
 Camera4D changes camera-space W and therefore changes the actual 4D perspective.
@@ -52,8 +58,10 @@ a small positive near hyperplane, currently `W = 0.1`:
 - an edge is drawn only when both endpoints are valid.
 
 This is safe but is not full 4D edge clipping. When an edge crosses the near
-hyperplane, it disappears until both endpoints are valid. Proper intersection
-and clipping can be added later without changing the tesseract or 3D renderer.
+hyperplane, it disappears until both endpoints are valid. Polygonal faces with
+any rejected vertex are also skipped as a whole, so no triangle can cross the
+perspective singularity. Proper intersection and clipping can be added later
+without changing any source geometry or the 3D renderer.
 
 ## Slicing
 

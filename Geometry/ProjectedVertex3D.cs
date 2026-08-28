@@ -9,8 +9,9 @@ public readonly record struct ProjectedVertex3D(
     Vector3D Position,
     double CameraDepth4D,
     double SourceW,
+    double WorldW,
     bool IsVisible)
 {
-    public static ProjectedVertex3D Hidden(double cameraDepth4D, double sourceW) =>
-        new(Vector3D.Zero, cameraDepth4D, sourceW, IsVisible: false);
+    public static ProjectedVertex3D Hidden(double cameraDepth4D, double sourceW, double worldW) =>
+        new(Vector3D.Zero, cameraDepth4D, sourceW, worldW, IsVisible: false);
 }

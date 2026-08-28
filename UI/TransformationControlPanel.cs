@@ -1,7 +1,9 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using HyperSpace.Geometry;
 using HyperSpace.Rendering;
+using HyperSpace.Scene;
 using HyperSpace.Transformations;
 using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Graphics;
@@ -14,7 +16,7 @@ namespace HyperSpace.UI;
 /// </summary>
 public sealed class TransformationControlPanel : IDisposable
 {
-    public const int PreferredWidth = 300;
+    public const int PreferredWidth = 320;
 
     private const int Padding = 10;
     private const int InnerPadding = 8;
@@ -25,6 +27,7 @@ public sealed class TransformationControlPanel : IDisposable
     private readonly SpriteFont _font;
     private readonly Texture2D _pixel;
     private readonly List<UiButton> _buttons;
+    private readonly Dictionary<TransformationCommand, UiButton> _buttonByCommand;
 
     private MouseState _previousMouse;
     private bool _hasPreviousMouse;
@@ -39,6 +42,11 @@ public sealed class TransformationControlPanel : IDisposable
 
         _buttons =
         [
+            new("TESSERACT", TransformationCommand.SelectTesseract),
+            new("HYPERSPHERE", TransformationCommand.SelectHypersphere),
+            new("4-SIMPLEX", TransformationCommand.SelectSimplex),
+            new("IRREGULAR", TransformationCommand.SelectIrregular),
+            new("4D SPIRAL", TransformationCommand.SelectSpiral),
             new("XY  +90", TransformationCommand.RotateXY),
             new("XZ  +90", TransformationCommand.RotateXZ),
             new("XW  +90", TransformationCommand.RotateXW),
@@ -59,10 +67,25 @@ public sealed class TransformationControlPanel : IDisposable
             new("RESET CAMERA", TransformationCommand.ResetCamera),
             new("SHOW GRID", TransformationCommand.ToggleGrid),
             new("SHOW AXES", TransformationCommand.ToggleAxes),
-            new("SHOW CELLS", TransformationCommand.ToggleCells),
+            new("SHOW SURFACE", TransformationCommand.ToggleCells),
             new("SHOW EDGES", TransformationCommand.ToggleEdges),
-            new("SHOW VERTICES", TransformationCommand.ToggleVertices)
+            new("SHOW VERTICES", TransformationCommand.ToggleVertices),
+            new("-", TransformationCommand.DecreaseSpiralR1),
+            new("+", TransformationCommand.IncreaseSpiralR1),
+            new("-", TransformationCommand.DecreaseSpiralR2),
+            new("+", TransformationCommand.IncreaseSpiralR2),
+            new("-", TransformationCommand.DecreaseSpiralK),
+            new("+", TransformationCommand.IncreaseSpiralK),
+            new("-", TransformationCommand.DecreaseSpiralSamples),
+            new("+", TransformationCommand.IncreaseSpiralSamples),
+            new("REGENERATE", TransformationCommand.RegenerateSpiral),
+            new("PLAY CURVE", TransformationCommand.PlayCurve),
+            new("RESET CURVE", TransformationCommand.ResetCurve),
+            new("SHOW CURVE", TransformationCommand.ToggleCurve),
+            new("SHOW POINTS", TransformationCommand.ToggleCurvePoints),
+            new("SHOW DIRECTION", TransformationCommand.ToggleCurveDirection)
         ];
+        _buttonByCommand = _buttons.ToDictionary(button => button.Command);
     }
 
     public Rectangle Bounds { get; private set; }
@@ -74,10 +97,11 @@ public sealed class TransformationControlPanel : IDisposable
         bool isGameActive,
         int viewportWidth,
         int viewportHeight,
-        bool isAnimationActive)
+        bool isAnimationActive,
+        IGeometry4D geometry)
     {
-        Layout(viewportWidth, viewportHeight);
-
+        var isSpiral = geometry.VisualStyle == GeometryVisualStyle4D.Spiral;
+        Layout(viewportWidth, viewportHeight, isSpiral);
         var previousMouse = _hasPreviousMouse
             ? _previousMouse
             : ReleasedMouseAt(mouse.X, mouse.Y, mouse.ScrollWheelValue);
@@ -85,9 +109,9 @@ public sealed class TransformationControlPanel : IDisposable
 
         foreach (var button in _buttons)
         {
-            var isEnabled = isGameActive &&
+            var isApplicable = IsApplicable(button.Command, isSpiral);
+            var isEnabled = isGameActive && isApplicable &&
                 (!isAnimationActive || !IsAnimationCommand(button.Command));
-
             if (button.Update(mouse, previousMouse, isEnabled) && requestedCommand is null)
             {
                 requestedCommand = button.Command;
@@ -101,14 +125,17 @@ public sealed class TransformationControlPanel : IDisposable
 
     public void SetActiveState(
         TransformationCommand? animationCommand,
-        DisplayOptions displayOptions)
+        DisplayOptions displayOptions,
+        GeometryVisualStyle4D selectedStyle,
+        CurvePlayback4D curvePlayback)
     {
         _activeAnimationCommand = animationCommand;
-
         foreach (var button in _buttons)
         {
             button.SetActive(button.Command == animationCommand ||
-                IsEnabledDisplayToggle(button.Command, displayOptions));
+                IsSelectedObject(button.Command, selectedStyle) ||
+                IsEnabledDisplayToggle(button.Command, displayOptions) ||
+                (button.Command == TransformationCommand.PlayCurve && curvePlayback.IsPlaying));
         }
     }
 
@@ -117,10 +144,12 @@ public sealed class TransformationControlPanel : IDisposable
         int viewportHeight,
         TransformationAnimator4D animator,
         DisplayOptions displayOptions,
-        IReadOnlyList<TesseractCell4D> cells)
+        IGeometry4D geometry,
+        SpiralParameters pendingSpiralParameters,
+        CurvePlayback4D curvePlayback)
     {
-        Layout(viewportWidth, viewportHeight);
-
+        var isSpiral = geometry.VisualStyle == GeometryVisualStyle4D.Spiral;
+        Layout(viewportWidth, viewportHeight, isSpiral);
         _spriteBatch.Begin(
             SpriteSortMode.Deferred,
             BlendState.NonPremultiplied,
@@ -129,40 +158,58 @@ public sealed class TransformationControlPanel : IDisposable
             RasterizerState.CullNone);
 
         _spriteBatch.Draw(_pixel, Bounds, new Color(12, 17, 30));
-        _spriteBatch.Draw(
-            _pixel,
-            new Rectangle(Bounds.X, 0, 2, Bounds.Height),
-            new Color(65, 91, 135));
+        _spriteBatch.Draw(_pixel, new Rectangle(Bounds.X, 0, 2, Bounds.Height), new Color(65, 91, 135));
+        DrawHeader(animator, curvePlayback, isSpiral);
+        DrawGroup(new Rectangle(Bounds.X + Padding, 63, Bounds.Width - (2 * Padding), 145),
+            "OBJECT", VisualizationPalette.ObjectInfoAccent);
 
-        DrawLabel("4D TESSERACT EXPLORER", Bounds.X + Padding, 7, new Color(225, 235, 255));
-        DrawLabel(
-            animator.IsActive ? $"Active: {animator.ActiveLabel}" : "Active: Ready",
-            Bounds.X + Padding,
-            26,
-            animator.IsActive ? new Color(255, 207, 92) : new Color(122, 193, 164));
-
-        var detail = animator.ActiveRotationPlane.HasValue
-            ? $"Angle: {animator.CurrentRotationDegrees:0.0} / 90 deg"
-            : animator.IsActive
-                ? $"Progress: {animator.Progress * 100.0:0}%"
-                : "One animation at a time";
-        DrawLabel(detail, Bounds.X + Padding, 43, new Color(153, 171, 205));
-
-        DrawGroup(new Rectangle(Bounds.X + Padding, 63, Bounds.Width - (2 * Padding), 111),
-            "ROTATIONS", VisualizationPalette.RotationAccent);
-        DrawGroup(new Rectangle(Bounds.X + Padding, 180, Bounds.Width - (2 * Padding), 165),
-            "TRANSFORMS", VisualizationPalette.TransformAccent);
-        DrawGroup(new Rectangle(Bounds.X + Padding, 351, Bounds.Width - (2 * Padding), 58),
-            "SYSTEM", VisualizationPalette.SystemAccent);
-        DrawGroup(new Rectangle(Bounds.X + Padding, 415, Bounds.Width - (2 * Padding), 297),
-            "DISPLAY", VisualizationPalette.DisplayAccent);
+        if (isSpiral)
+        {
+            DrawGroup(new Rectangle(Bounds.X + Padding, 214, Bounds.Width - (2 * Padding), 218),
+                "4D SPIRAL PARAMETERS", VisualizationPalette.CurveAccent);
+            if (geometry is Spiral4D spiral && spiral.Parameters != pendingSpiralParameters)
+            {
+                DrawLabel("PENDING", Bounds.X + 246, 218, new Color(255, 207, 92));
+            }
+            DrawGroup(new Rectangle(Bounds.X + Padding, 438, Bounds.Width - (2 * Padding), 111),
+                "ROTATIONS", VisualizationPalette.RotationAccent);
+            DrawGroup(new Rectangle(Bounds.X + Padding, 555, Bounds.Width - (2 * Padding), 165),
+                "TRANSFORMS", VisualizationPalette.TransformAccent);
+            DrawGroup(new Rectangle(Bounds.X + Padding, 726, Bounds.Width - (2 * Padding), 58),
+                "SYSTEM", VisualizationPalette.SystemAccent);
+            DrawGroup(new Rectangle(Bounds.X + Padding, 790, Bounds.Width - (2 * Padding), 110),
+                "DISPLAY", VisualizationPalette.DisplayAccent);
+        }
+        else
+        {
+            DrawGroup(new Rectangle(Bounds.X + Padding, 214, Bounds.Width - (2 * Padding), 111),
+                "ROTATIONS", VisualizationPalette.RotationAccent);
+            DrawGroup(new Rectangle(Bounds.X + Padding, 331, Bounds.Width - (2 * Padding), 165),
+                "TRANSFORMS", VisualizationPalette.TransformAccent);
+            DrawGroup(new Rectangle(Bounds.X + Padding, 502, Bounds.Width - (2 * Padding), 58),
+                "SYSTEM", VisualizationPalette.SystemAccent);
+            DrawGroup(new Rectangle(Bounds.X + Padding, 566, Bounds.Width - (2 * Padding), 326),
+                "DISPLAY", VisualizationPalette.DisplayAccent);
+        }
 
         foreach (var button in _buttons)
         {
-            DrawButton(button);
+            if (IsApplicable(button.Command, isSpiral))
+            {
+                DrawButton(button);
+            }
         }
 
-        DrawLegend(cells, displayOptions);
+        DrawObjectInfo(geometry);
+        if (isSpiral)
+        {
+            DrawSpiralParameters(pendingSpiralParameters);
+        }
+        else
+        {
+            DrawPolytopeLegend(geometry, displayOptions);
+        }
+
         _spriteBatch.End();
     }
 
@@ -172,40 +219,205 @@ public sealed class TransformationControlPanel : IDisposable
         _spriteBatch.Dispose();
     }
 
-    private void Layout(int viewportWidth, int viewportHeight)
+    private void DrawHeader(
+        TransformationAnimator4D animator,
+        CurvePlayback4D curvePlayback,
+        bool isSpiral)
+    {
+        DrawLabel("4D GEOMETRY EXPLORER", Bounds.X + Padding, 7, new Color(225, 235, 255));
+        var activeLabel = animator.IsActive
+            ? $"Active: {animator.ActiveLabel}"
+            : isSpiral && curvePlayback.IsPlaying
+                ? "Active: Drawing curve"
+                : "Active: Ready";
+        DrawLabel(
+            activeLabel,
+            Bounds.X + Padding,
+            26,
+            animator.IsActive || curvePlayback.IsPlaying
+                ? new Color(255, 207, 92)
+                : new Color(122, 193, 164));
+        var detail = animator.ActiveRotationPlane.HasValue
+            ? $"Angle: {animator.CurrentRotationDegrees:0.0} / 90 deg"
+            : animator.IsActive
+                ? $"Progress: {animator.Progress * 100.0:0}%"
+                : isSpiral && curvePlayback.IsPlaying
+                    ? $"Curve: {curvePlayback.Progress * 100.0:0}%"
+                    : "One selected object at a time";
+        DrawLabel(detail, Bounds.X + Padding, 43, new Color(153, 171, 205));
+    }
+
+    private void Layout(int viewportWidth, int viewportHeight, bool isSpiral)
     {
         var width = Math.Min(PreferredWidth, Math.Max(1, viewportWidth));
         Bounds = new Rectangle(viewportWidth - width, 0, width, viewportHeight);
-
         var contentLeft = Bounds.X + Padding + InnerPadding;
         var contentWidth = Math.Max(2, width - (2 * (Padding + InnerPadding)));
         var columnWidth = Math.Max(1, (contentWidth - ColumnGap) / 2);
         var right = contentLeft + columnWidth + ColumnGap;
 
-        SetTwoColumnRow(0, 1, contentLeft, right, columnWidth, 88);
-        SetTwoColumnRow(2, 3, contentLeft, right, columnWidth, 117);
-        SetTwoColumnRow(4, 5, contentLeft, right, columnWidth, 146);
-        SetTwoColumnRow(6, 7, contentLeft, right, columnWidth, 204);
-        SetTwoColumnRow(8, 9, contentLeft, right, columnWidth, 233);
-        SetTwoColumnRow(10, 11, contentLeft, right, columnWidth, 262);
-        SetTwoColumnRow(12, 13, contentLeft, right, columnWidth, 291);
-        SetTwoColumnRow(14, 15, contentLeft, right, columnWidth, 320);
-        SetTwoColumnRow(16, 17, contentLeft, right, columnWidth, 378);
-        SetTwoColumnRow(18, 19, contentLeft, right, columnWidth, 439);
-        SetTwoColumnRow(20, 21, contentLeft, right, columnWidth, 468);
-        _buttons[22].SetBounds(new Rectangle(contentLeft, 497, contentWidth, ButtonHeight));
+        SetTwoColumnRow(TransformationCommand.SelectTesseract, TransformationCommand.SelectHypersphere,
+            contentLeft, right, columnWidth, 87);
+        SetTwoColumnRow(TransformationCommand.SelectSimplex, TransformationCommand.SelectIrregular,
+            contentLeft, right, columnWidth, 116);
+        SetBounds(TransformationCommand.SelectSpiral,
+            new Rectangle(contentLeft, 145, contentWidth, ButtonHeight));
+
+        if (isSpiral)
+        {
+            var adjustmentLeft = contentLeft + 145;
+            const int adjustmentWidth = 62;
+            var adjustmentRight = adjustmentLeft + adjustmentWidth + ColumnGap;
+            SetTwoColumnRow(TransformationCommand.DecreaseSpiralR1, TransformationCommand.IncreaseSpiralR1,
+                adjustmentLeft, adjustmentRight, adjustmentWidth, 238);
+            SetTwoColumnRow(TransformationCommand.DecreaseSpiralR2, TransformationCommand.IncreaseSpiralR2,
+                adjustmentLeft, adjustmentRight, adjustmentWidth, 267);
+            SetTwoColumnRow(TransformationCommand.DecreaseSpiralK, TransformationCommand.IncreaseSpiralK,
+                adjustmentLeft, adjustmentRight, adjustmentWidth, 296);
+            SetTwoColumnRow(TransformationCommand.DecreaseSpiralSamples, TransformationCommand.IncreaseSpiralSamples,
+                adjustmentLeft, adjustmentRight, adjustmentWidth, 325);
+            SetBounds(TransformationCommand.RegenerateSpiral,
+                new Rectangle(contentLeft, 354, contentWidth, ButtonHeight));
+            SetTwoColumnRow(TransformationCommand.PlayCurve, TransformationCommand.ResetCurve,
+                contentLeft, right, columnWidth, 383);
+
+            LayoutCommonControls(contentLeft, right, columnWidth, contentWidth,
+                rotationY: 462, transformY: 579, systemY: 750);
+            SetTwoColumnRow(TransformationCommand.ToggleGrid, TransformationCommand.ToggleAxes,
+                contentLeft, right, columnWidth, 814);
+            SetTwoColumnRow(TransformationCommand.ToggleCurve, TransformationCommand.ToggleCurvePoints,
+                contentLeft, right, columnWidth, 843);
+            SetBounds(TransformationCommand.ToggleCurveDirection,
+                new Rectangle(contentLeft, 872, contentWidth, ButtonHeight));
+        }
+        else
+        {
+            LayoutCommonControls(contentLeft, right, columnWidth, contentWidth,
+                rotationY: 238, transformY: 355, systemY: 526);
+            SetTwoColumnRow(TransformationCommand.ToggleGrid, TransformationCommand.ToggleAxes,
+                contentLeft, right, columnWidth, 590);
+            SetTwoColumnRow(TransformationCommand.ToggleCells, TransformationCommand.ToggleEdges,
+                contentLeft, right, columnWidth, 619);
+            SetBounds(TransformationCommand.ToggleVertices,
+                new Rectangle(contentLeft, 648, contentWidth, ButtonHeight));
+        }
     }
 
-    private void SetTwoColumnRow(
-        int leftIndex,
-        int rightIndex,
+    private void LayoutCommonControls(
         int left,
         int right,
         int columnWidth,
+        int contentWidth,
+        int rotationY,
+        int transformY,
+        int systemY)
+    {
+        SetTwoColumnRow(TransformationCommand.RotateXY, TransformationCommand.RotateXZ,
+            left, right, columnWidth, rotationY);
+        SetTwoColumnRow(TransformationCommand.RotateXW, TransformationCommand.RotateYZ,
+            left, right, columnWidth, rotationY + 29);
+        SetTwoColumnRow(TransformationCommand.RotateYW, TransformationCommand.RotateZW,
+            left, right, columnWidth, rotationY + 58);
+        SetTwoColumnRow(TransformationCommand.ScaleUp, TransformationCommand.ScaleDown,
+            left, right, columnWidth, transformY);
+        SetTwoColumnRow(TransformationCommand.MovePositiveX, TransformationCommand.MoveNegativeX,
+            left, right, columnWidth, transformY + 29);
+        SetTwoColumnRow(TransformationCommand.MovePositiveY, TransformationCommand.MoveNegativeY,
+            left, right, columnWidth, transformY + 58);
+        SetTwoColumnRow(TransformationCommand.MovePositiveZ, TransformationCommand.MoveNegativeZ,
+            left, right, columnWidth, transformY + 87);
+        SetTwoColumnRow(TransformationCommand.MovePositiveW, TransformationCommand.MoveNegativeW,
+            left, right, columnWidth, transformY + 116);
+        SetTwoColumnRow(TransformationCommand.ResetObject, TransformationCommand.ResetCamera,
+            left, right, columnWidth, systemY);
+    }
+
+    private void SetTwoColumnRow(
+        TransformationCommand leftCommand,
+        TransformationCommand rightCommand,
+        int left,
+        int right,
+        int width,
         int y)
     {
-        _buttons[leftIndex].SetBounds(new Rectangle(left, y, columnWidth, ButtonHeight));
-        _buttons[rightIndex].SetBounds(new Rectangle(right, y, columnWidth, ButtonHeight));
+        SetBounds(leftCommand, new Rectangle(left, y, width, ButtonHeight));
+        SetBounds(rightCommand, new Rectangle(right, y, width, ButtonHeight));
+    }
+
+    private void SetBounds(TransformationCommand command, Rectangle bounds) =>
+        _buttonByCommand[command].SetBounds(bounds);
+
+    private void DrawObjectInfo(IGeometry4D geometry)
+    {
+        var left = Bounds.X + Padding + InnerPadding;
+        DrawLabel(
+            $"V {geometry.Vertices.Count}   E {geometry.Edges.Count}   F {geometry.Faces.Count}   C {geometry.Cells.Count}",
+            left,
+            174,
+            new Color(210, 222, 244));
+        DrawLabel(geometry.ResolutionDescription, left, 191, new Color(133, 158, 195));
+    }
+
+    private void DrawSpiralParameters(SpiralParameters parameters)
+    {
+        var left = Bounds.X + Padding + InnerPadding;
+        DrawLabel($"r1    {parameters.R1:0.00}", left, 242, new Color(205, 224, 239));
+        DrawLabel($"r2    {parameters.R2:0.00}", left, 271, new Color(205, 224, 239));
+        DrawLabel($"k     {parameters.K:0.00}", left, 300, new Color(205, 224, 239));
+        DrawLabel($"Samples {parameters.SampleCount}", left, 329, new Color(205, 224, 239));
+        DrawLegendEntry(left, 412, VisualizationPalette.CurveStart, "START: octahedron");
+        DrawLegendEntry(left + 145, 412, VisualizationPalette.CurveEnd, "END: cube");
+    }
+
+    private void DrawPolytopeLegend(IGeometry4D geometry, DisplayOptions options)
+    {
+        var left = Bounds.X + Padding + InnerPadding;
+        var halfWidth = (Bounds.Width - (2 * (Padding + InnerPadding))) / 2;
+        DrawLabel("SURFACE / CELLS", left, 678,
+            options.ShowCells ? VisualizationPalette.DisplayAccent : new Color(92, 101, 120));
+
+        if (geometry.VisualStyle == GeometryVisualStyle4D.Tesseract)
+        {
+            for (var index = 0; index < geometry.Cells.Count; index++)
+            {
+                DrawLegendEntry(
+                    left + ((index % 2) * halfWidth),
+                    696 + ((index / 2) * 17),
+                    VisualizationPalette.CellColor(index),
+                    geometry.Cells[index].Label);
+            }
+        }
+        else if (geometry.VisualStyle == GeometryVisualStyle4D.Simplex)
+        {
+            for (var index = 0; index < geometry.Cells.Count; index++)
+            {
+                DrawLegendEntry(
+                    left + ((index % 2) * halfWidth),
+                    696 + ((index / 2) * 17),
+                    VisualizationPalette.CellColor(index, geometry.VisualStyle),
+                    geometry.Cells[index].Label);
+            }
+        }
+        else
+        {
+            DrawLegendEntry(left, 696, VisualizationPalette.WDepthColor(geometry.VisualStyle, 0.0f), "W-");
+            DrawLegendEntry(left + halfWidth, 696, VisualizationPalette.WDepthColor(geometry.VisualStyle, 1.0f), "W+");
+            DrawLabel(
+                geometry.Cells.Count == 0 ? "sampled 2-sphere shells" : $"{geometry.Cells.Count} tetrahedral cells",
+                left,
+                714,
+                new Color(155, 174, 207));
+        }
+
+        var edgeLegend = geometry.VisualStyle == GeometryVisualStyle4D.Tesseract
+            ? "EDGES: XYZW direction + camera W shade"
+            : "EDGES: local W color + camera W shade";
+        DrawLabel(edgeLegend, left, 773,
+            options.ShowEdges ? new Color(185, 204, 233) : new Color(92, 101, 120));
+        DrawLabel("VERTICES: W depth, style tinted", left, 793,
+            options.ShowVertices ? new Color(185, 204, 233) : new Color(92, 101, 120));
+        DrawLabel($"Surface alpha {VisualizationPalette.CellSurfaceAlpha:0.00}",
+            left, 813, new Color(112, 128, 155));
     }
 
     private void DrawGroup(Rectangle bounds, string title, Color accent)
@@ -219,11 +431,12 @@ public sealed class TransformationControlPanel : IDisposable
     private void DrawButton(UiButton button)
     {
         var accent = AccentFor(button.Command);
-        var isDisplayToggle = IsDisplayCommand(button.Command);
+        var isToggle = IsDisplayToggleCommand(button.Command);
         var isCurrentAnimation = button.Command == _activeAnimationCommand;
         var fill = !button.IsEnabled
             ? new Color(33, 39, 53)
-            : button.IsActive && isDisplayToggle
+            : button.IsActive && (isToggle || IsObjectCommand(button.Command) ||
+                button.Command == TransformationCommand.PlayCurve)
                 ? Color.Lerp(new Color(28, 42, 65), accent, 0.32f)
                 : isCurrentAnimation
                     ? new Color(104, 72, 173)
@@ -234,68 +447,22 @@ public sealed class TransformationControlPanel : IDisposable
                             : new Color(27, 40, 61);
         var border = isCurrentAnimation
             ? new Color(255, 207, 92)
-            : button.IsHovered || button.IsActive
-                ? accent
-                : new Color(61, 81, 112);
-        var textColor = button.IsEnabled
-            ? new Color(225, 235, 255)
-            : new Color(92, 101, 120);
+            : button.IsHovered || button.IsActive ? accent : new Color(61, 81, 112);
+        var textColor = button.IsEnabled ? new Color(225, 235, 255) : new Color(92, 101, 120);
 
         _spriteBatch.Draw(_pixel, button.Bounds, border);
-        var inner = new Rectangle(
+        _spriteBatch.Draw(_pixel, new Rectangle(
             button.Bounds.X + 1,
             button.Bounds.Y + 1,
             Math.Max(0, button.Bounds.Width - 2),
-            Math.Max(0, button.Bounds.Height - 2));
-        _spriteBatch.Draw(_pixel, inner, fill);
-
-        var label = isDisplayToggle
+            Math.Max(0, button.Bounds.Height - 2)), fill);
+        var label = isToggle
             ? $"{(button.IsActive ? "ON " : "OFF")}  {button.Label[5..]}"
             : button.Label;
         var size = _font.MeasureString(label);
-        var position = new Vector2(
+        _spriteBatch.DrawString(_font, label, new Vector2(
             button.Bounds.Center.X - (size.X / 2.0f),
-            button.Bounds.Center.Y - (size.Y / 2.0f));
-        _spriteBatch.DrawString(_font, label, position, textColor);
-    }
-
-    private void DrawLegend(
-        IReadOnlyList<TesseractCell4D> cells,
-        DisplayOptions displayOptions)
-    {
-        var left = Bounds.X + Padding + InnerPadding;
-        var halfWidth = (Bounds.Width - (2 * (Padding + InnerPadding))) / 2;
-
-        DrawLabel("CELLS", left, 528,
-            displayOptions.ShowCells ? VisualizationPalette.DisplayAccent : new Color(92, 101, 120));
-        for (var index = 0; index < cells.Count; index++)
-        {
-            var column = index % 2;
-            var row = index / 2;
-            DrawLegendEntry(
-                left + (column * halfWidth),
-                547 + (row * 18),
-                VisualizationPalette.CellColor(index),
-                $"{cells[index].Label} cell");
-        }
-
-        DrawLabel("EDGES", left, 621,
-            displayOptions.ShowEdges ? VisualizationPalette.DisplayAccent : new Color(92, 101, 120));
-        var edgeColumnWidth = Math.Max(1, (Bounds.Width - (2 * (Padding + InnerPadding))) / 4);
-        DrawCompactLegendEntry(left, 640, VisualizationPalette.EdgeX, "X", edgeColumnWidth);
-        DrawCompactLegendEntry(left + edgeColumnWidth, 640, VisualizationPalette.EdgeY, "Y", edgeColumnWidth);
-        DrawCompactLegendEntry(left + (2 * edgeColumnWidth), 640, VisualizationPalette.EdgeZ, "Z", edgeColumnWidth);
-        DrawCompactLegendEntry(left + (3 * edgeColumnWidth), 640, VisualizationPalette.EdgeW, "W", edgeColumnWidth);
-
-        DrawLabel("VERTICES", left, 657,
-            displayOptions.ShowVertices ? VisualizationPalette.DisplayAccent : new Color(92, 101, 120));
-        DrawLegendEntry(left, 676, VisualizationPalette.VertexNegativeW, "W-");
-        DrawLegendEntry(left + halfWidth, 676, VisualizationPalette.VertexPositiveW, "W+");
-        DrawLabel(
-            $"Cell alpha {VisualizationPalette.CellSurfaceAlpha:0.00}",
-            left,
-            694,
-            new Color(112, 128, 155));
+            button.Bounds.Center.Y - (size.Y / 2.0f)), textColor);
     }
 
     private void DrawLegendEntry(int x, int y, Color color, string label)
@@ -304,39 +471,71 @@ public sealed class TransformationControlPanel : IDisposable
         DrawLabel(label, x + 17, y, new Color(190, 203, 225));
     }
 
-    private void DrawCompactLegendEntry(int x, int y, Color color, string label, int width)
-    {
-        _spriteBatch.Draw(_pixel, new Rectangle(x, y + 2, 11, 11), color);
-        DrawLabel(label, x + Math.Min(17, Math.Max(12, width - 8)), y, new Color(190, 203, 225));
-    }
-
-    private void DrawLabel(string text, int x, int y, Color color)
-    {
+    private void DrawLabel(string text, int x, int y, Color color) =>
         _spriteBatch.DrawString(_font, text, new Vector2(x, y), color);
+
+    private static Color AccentFor(TransformationCommand command) => command switch
+    {
+        >= TransformationCommand.SelectTesseract and <= TransformationCommand.SelectSpiral =>
+            VisualizationPalette.ObjectInfoAccent,
+        >= TransformationCommand.RotateXY and <= TransformationCommand.RotateZW =>
+            VisualizationPalette.RotationAccent,
+        >= TransformationCommand.ScaleUp and <= TransformationCommand.MoveNegativeW =>
+            VisualizationPalette.TransformAccent,
+        TransformationCommand.ResetObject or TransformationCommand.ResetCamera =>
+            VisualizationPalette.SystemAccent,
+        >= TransformationCommand.DecreaseSpiralR1 and <= TransformationCommand.ResetCurve =>
+            VisualizationPalette.CurveAccent,
+        _ => VisualizationPalette.DisplayAccent
+    };
+
+    private static bool IsApplicable(TransformationCommand command, bool isSpiral)
+    {
+        if (command is TransformationCommand.ToggleCells or
+            TransformationCommand.ToggleEdges or
+            TransformationCommand.ToggleVertices)
+        {
+            return !isSpiral;
+        }
+
+        if (command >= TransformationCommand.DecreaseSpiralR1)
+        {
+            return isSpiral;
+        }
+
+        return true;
     }
 
-    private static Color AccentFor(TransformationCommand command) =>
-        command switch
-        {
-            >= TransformationCommand.RotateXY and <= TransformationCommand.RotateZW =>
-                VisualizationPalette.RotationAccent,
-            >= TransformationCommand.ScaleUp and <= TransformationCommand.MoveNegativeW =>
-                VisualizationPalette.TransformAccent,
-            TransformationCommand.ResetObject or TransformationCommand.ResetCamera =>
-                VisualizationPalette.SystemAccent,
-            _ => VisualizationPalette.DisplayAccent
-        };
+    private static bool IsObjectCommand(TransformationCommand command) =>
+        command >= TransformationCommand.SelectTesseract &&
+        command <= TransformationCommand.SelectSpiral;
 
     private static bool IsAnimationCommand(TransformationCommand command) =>
         command >= TransformationCommand.RotateXY &&
         command <= TransformationCommand.MoveNegativeW;
 
-    private static bool IsDisplayCommand(TransformationCommand command) =>
-        command >= TransformationCommand.ToggleGrid;
+    private static bool IsDisplayToggleCommand(TransformationCommand command) =>
+        command is TransformationCommand.ToggleGrid or
+            TransformationCommand.ToggleAxes or
+            TransformationCommand.ToggleCells or
+            TransformationCommand.ToggleEdges or
+            TransformationCommand.ToggleVertices or
+            TransformationCommand.ToggleCurve or
+            TransformationCommand.ToggleCurvePoints or
+            TransformationCommand.ToggleCurveDirection;
 
-    private static bool IsEnabledDisplayToggle(
-        TransformationCommand command,
-        DisplayOptions options) =>
+    private static bool IsSelectedObject(TransformationCommand command, GeometryVisualStyle4D style) =>
+        (command, style) switch
+        {
+            (TransformationCommand.SelectTesseract, GeometryVisualStyle4D.Tesseract) => true,
+            (TransformationCommand.SelectHypersphere, GeometryVisualStyle4D.Hypersphere) => true,
+            (TransformationCommand.SelectSimplex, GeometryVisualStyle4D.Simplex) => true,
+            (TransformationCommand.SelectIrregular, GeometryVisualStyle4D.Irregular) => true,
+            (TransformationCommand.SelectSpiral, GeometryVisualStyle4D.Spiral) => true,
+            _ => false
+        };
+
+    private static bool IsEnabledDisplayToggle(TransformationCommand command, DisplayOptions options) =>
         command switch
         {
             TransformationCommand.ToggleGrid => options.ShowGrid,
@@ -344,6 +543,9 @@ public sealed class TransformationControlPanel : IDisposable
             TransformationCommand.ToggleCells => options.ShowCells,
             TransformationCommand.ToggleEdges => options.ShowEdges,
             TransformationCommand.ToggleVertices => options.ShowVertices,
+            TransformationCommand.ToggleCurve => options.ShowEdges,
+            TransformationCommand.ToggleCurvePoints => options.ShowVertices,
+            TransformationCommand.ToggleCurveDirection => options.ShowDirection,
             _ => false
         };
 

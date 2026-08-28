@@ -11,13 +11,13 @@ namespace HyperSpace.Projection;
 public sealed class WireframeProjectionPipeline4D
 {
     public Wireframe3D Project(
-        Tesseract4D tesseract,
+        IGeometry4D geometry,
         Transform4D objectTransform,
         Camera4D camera,
         PerspectiveProjector4D projector)
         => Project(
-            tesseract.Vertices,
-            tesseract.Edges,
+            geometry.Vertices,
+            geometry.Edges,
             objectTransform,
             camera,
             projector);
@@ -41,8 +41,9 @@ public sealed class WireframeProjectionPipeline4D
                     projectedPoint,
                     cameraPoint.W,
                     sourceVertices[index].W,
+                    worldPoint.W,
                     IsVisible: true)
-                : ProjectedVertex3D.Hidden(cameraPoint.W, sourceVertices[index].W);
+                : ProjectedVertex3D.Hidden(cameraPoint.W, sourceVertices[index].W, worldPoint.W);
         }
 
         return new Wireframe3D(vertices, sourceEdges);

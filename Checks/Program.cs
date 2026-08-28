@@ -6,6 +6,7 @@ using HyperSpace.Input;
 using HyperSpace.Mathematics;
 using HyperSpace.Projection;
 using HyperSpace.Rendering;
+using HyperSpace.Scene;
 using HyperSpace.Transformations;
 using HyperSpace.UI;
 using Microsoft.Xna.Framework;
@@ -15,6 +16,12 @@ var checks = new (string Name, Action Run)[]
 {
     ("Tesseract topology", CheckTesseractTopology),
     ("Tesseract cubic cells", CheckTesseractCells),
+    ("Hypersphere sampling", CheckHypersphereSampling),
+    ("Regular 4-simplex topology", CheckSimplexTopology),
+    ("Irregular 4D polytope topology", CheckIrregularPolytope),
+    ("4D spiral sampling", CheckSpiralSampling),
+    ("Curve playback state", CheckCurvePlayback),
+    ("Common geometry projection", CheckCommonGeometryProjection),
     ("4D reference grid", CheckReferenceGrid),
     ("Six plane rotations", CheckPlaneRotations),
     ("Rotation inverse", CheckRotationInverse),
@@ -87,6 +94,8 @@ static void CheckTesseractCells()
 
     foreach (var cell in tesseract.Cells)
     {
+        var fixedAxis = cell.FixedAxis ?? throw new InvalidOperationException(
+            "A tesseract cell must declare its fixed axis.");
         Require(labels.Add(cell.Label), "Each fixed-axis/sign cell label must be unique.");
         Require(cell.FixedSign is -1 or 1, "Cell sign must be either -1 or +1.");
         Require(cell.VertexIndices.Count == 8, "Each cubic cell must contain eight vertices.");
@@ -98,7 +107,7 @@ static void CheckTesseractCells()
         {
             var vertex = tesseract.Vertices[vertexIndex];
             RequireNear(
-                GetCoordinate(vertex, cell.FixedAxis),
+                GetCoordinate(vertex, fixedAxis),
                 cell.FixedSign,
                 1e-12,
                 $"Cell {cell.Label} must fix its declared coordinate.");
@@ -107,27 +116,19 @@ static void CheckTesseractCells()
 
         foreach (var face in cell.Faces)
         {
-            var indices = new[] { face.A, face.B, face.C, face.D };
+            var indices = face.VertexIndices.ToArray();
             Require(indices.Distinct().Count() == 4, "A square face must contain four vertices.");
             Require(indices.All(cell.VertexIndices.Contains),
                 "Every cell face vertex must belong to that cell.");
 
-            Require(ChangedCoordinateCount(
-                tesseract.Vertices[face.A],
-                tesseract.Vertices[face.B]) == 1,
-                "Consecutive square-face vertices A-B must share an edge.");
-            Require(ChangedCoordinateCount(
-                tesseract.Vertices[face.B],
-                tesseract.Vertices[face.C]) == 1,
-                "Consecutive square-face vertices B-C must share an edge.");
-            Require(ChangedCoordinateCount(
-                tesseract.Vertices[face.C],
-                tesseract.Vertices[face.D]) == 1,
-                "Consecutive square-face vertices C-D must share an edge.");
-            Require(ChangedCoordinateCount(
-                tesseract.Vertices[face.D],
-                tesseract.Vertices[face.A]) == 1,
-                "Consecutive square-face vertices D-A must share an edge.");
+            for (var index = 0; index < indices.Length; index++)
+            {
+                var next = (index + 1) % indices.Length;
+                Require(ChangedCoordinateCount(
+                    tesseract.Vertices[indices[index]],
+                    tesseract.Vertices[indices[next]]) == 1,
+                    "Consecutive square-face vertices must share an edge.");
+            }
 
             var key = string.Join(",", indices.OrderBy(index => index));
             faceMembership[key] = faceMembership.GetValueOrDefault(key) + 1;
@@ -140,8 +141,285 @@ static void CheckTesseractCells()
         "Every tesseract vertex must belong to four cubic boundary cells.");
     Require(faceMembership.Count == 24,
         "A tesseract must contain 24 unique square faces.");
+    Require(tesseract.Faces.Count == 24,
+        "The common geometry view must expose the 24 unique square faces.");
     Require(faceMembership.Values.All(count => count == 2),
         "Every square face must be shared by exactly two cubic cells.");
+}
+
+static void CheckHypersphereSampling()
+{
+    const double radius = 1.25;
+    var sphere = new Hypersphere4D(radius, wSegments: 4, polarSegments: 4, azimuthSegments: 8);
+
+    Require(sphere.Vertices.Count == 80,
+        "The documented default S3 sampling must contain 80 vertices.");
+    Require(sphere.Edges.Count == 272,
+        "The documented default S3 parameter mesh must contain 272 edges.");
+    Require(sphere.Faces.Count == 96,
+        "Three sampled 2-sphere shells must contain 96 polygonal faces.");
+    Require(sphere.Cells.Count == 0,
+        "Sampled S3 shells must not be mislabeled as volumetric boundary cells.");
+
+    foreach (var vertex in sphere.Vertices)
+    {
+        RequireNear(vertex.LengthSquared, radius * radius, 1e-11,
+            "Every hypersphere sample must satisfy x^2+y^2+z^2+w^2=r^2.");
+    }
+
+    Require(sphere.Vertices.Any(vertex => vertex.W > 0.0) &&
+        sphere.Vertices.Any(vertex => vertex.W < 0.0),
+        "The hypersphere sampling must cover positive and negative W.");
+    RequireValidTopology(sphere);
+}
+
+static void CheckSimplexTopology()
+{
+    var simplex = new Simplex4D(radius: 1.35);
+    Require(simplex.Vertices.Count == 5, "A 4-simplex must have five vertices.");
+    Require(simplex.Edges.Count == 10, "A 4-simplex must have ten edges.");
+    Require(simplex.Faces.Count == 10, "A 4-simplex must have ten triangular faces.");
+    Require(simplex.Cells.Count == 5, "A 4-simplex must have five tetrahedral cells.");
+    Require(simplex.Faces.All(face => face.VertexIndices.Count == 3),
+        "Every 4-simplex face must be triangular.");
+    Require(simplex.Cells.All(cell => cell.VertexIndices.Count == 4 && cell.Faces.Count == 4),
+        "Every 4-simplex boundary cell must be a tetrahedron.");
+
+    var centroid = simplex.Vertices.Aggregate(Vector4D.Zero, (sum, vertex) => sum + vertex) * 0.2;
+    RequireVectorNear(centroid, Vector4D.Zero, 1e-12,
+        "The regular 4-simplex must be centered at the origin.");
+    var edgeLengths = simplex.Edges
+        .Select(edge => (simplex.Vertices[edge.End] - simplex.Vertices[edge.Start]).Length)
+        .ToArray();
+    Require(edgeLengths.All(length => Math.Abs(length - edgeLengths[0]) < 1e-12),
+        "All edges of the regular 4-simplex must have equal length.");
+
+    RequireEachCellFaceSharedTwice(simplex);
+    RequireValidTopology(simplex);
+}
+
+static void CheckIrregularPolytope()
+{
+    var polytope = new IrregularPolytope4D();
+    var repeated = new IrregularPolytope4D();
+    Require(polytope.Vertices.SequenceEqual(repeated.Vertices),
+        "The irregular polytope must be deterministic across runs.");
+    Require(polytope.Vertices.Count == 8, "A 4D cross-polytope must have eight vertices.");
+    Require(polytope.Edges.Count == 24, "A 4D cross-polytope must have 24 edges.");
+    Require(polytope.Faces.Count == 32, "A 4D cross-polytope must have 32 triangular faces.");
+    Require(polytope.Cells.Count == 16, "A 4D cross-polytope must have 16 tetrahedral cells.");
+    Require(polytope.Faces.All(face => face.VertexIndices.Count == 3),
+        "Every irregular 16-cell face must remain triangular.");
+
+    var centroid = polytope.Vertices.Aggregate(Vector4D.Zero, (sum, vertex) => sum + vertex) * 0.125;
+    RequireVectorNear(centroid, Vector4D.Zero, 1e-12,
+        "The irregular realization must remain centered for inspection.");
+    var distinctEdgeLengths = polytope.Edges
+        .Select(edge => Math.Round(
+            (polytope.Vertices[edge.End] - polytope.Vertices[edge.Start]).Length,
+            digits: 8))
+        .Distinct()
+        .Count();
+    Require(distinctEdgeLengths >= 8,
+        "The irregular realization must have meaningfully varied edge lengths.");
+    Require(polytope.Vertices.Count != new Tesseract4D().Vertices.Count,
+        "The irregular object must not be a deformed tesseract topology.");
+
+    RequireEachCellFaceSharedTwice(polytope);
+    RequireValidTopology(polytope);
+}
+
+static void CheckSpiralSampling()
+{
+    var parameters = SpiralParameters.Default;
+    var generator = new Spiral4DGenerator();
+    var spiral = generator.Generate(parameters);
+
+    Require(spiral.Vertices.Count == 600,
+        "The default 4D spiral must contain 600 samples.");
+    Require(spiral.Edges.Count == 599,
+        "A 600-point open polyline must contain 599 consecutive edges.");
+    Require(spiral.Faces.Count == 0 && spiral.Cells.Count == 0,
+        "A curve must not invent polygon faces or volumetric cells.");
+    RequireVectorNear(
+        spiral.Vertices[0],
+        new Vector4D(parameters.R1, 0.0, parameters.R2, 0.0),
+        1e-12,
+        "P(0) must match the parametric definition.");
+
+    var testT = Math.PI / 4.0;
+    RequireVectorNear(
+        Spiral4DGenerator.Evaluate(parameters, testT),
+        new Vector4D(
+            parameters.R1 * Math.Cos(testT),
+            parameters.R1 * Math.Sin(testT),
+            parameters.R2 * Math.Cos(parameters.K * testT),
+            parameters.R2 * Math.Sin(parameters.K * testT)),
+        1e-12,
+        "Direct evaluation must use both circular parameter components.");
+
+    foreach (var vertex in spiral.Vertices)
+    {
+        RequireNear(
+            (vertex.X * vertex.X) + (vertex.Y * vertex.Y),
+            parameters.R1 * parameters.R1,
+            1e-12,
+            "Every sample must remain on the XY circle of radius r1.");
+        RequireNear(
+            (vertex.Z * vertex.Z) + (vertex.W * vertex.W),
+            parameters.R2 * parameters.R2,
+            1e-12,
+            "Every sample must remain on the ZW circle of radius r2.");
+    }
+
+    Require(spiral.Vertices.Count(vertex => Math.Abs(vertex.X) > 1e-6) > 400,
+        "X must vary significantly along the curve.");
+    Require(spiral.Vertices.Count(vertex => Math.Abs(vertex.Y) > 1e-6) > 400,
+        "Y must vary significantly along the curve.");
+    Require(spiral.Vertices.Count(vertex => Math.Abs(vertex.Z) > 1e-6) > 400,
+        "Z must vary significantly along the curve.");
+    Require(spiral.Vertices.Count(vertex => Math.Abs(vertex.W) > 1e-6) > 400,
+        "W must vary significantly along the curve.");
+
+    for (var index = 0; index < spiral.Edges.Count; index++)
+    {
+        Require(spiral.Edges[index] == new Edge(index, index + 1),
+            "Spiral edges must connect only consecutive parameter samples.");
+    }
+
+    var custom = parameters with
+    {
+        R1 = 1.4,
+        R2 = 0.7,
+        K = 1.5,
+        SampleCount = 101,
+        TStart = -Math.PI,
+        TEnd = Math.PI
+    };
+    var customSpiral = generator.Generate(custom);
+    Require(customSpiral.Vertices.Count == 101 && customSpiral.Edges.Count == 100,
+        "Custom spiral sampling parameters must change generated geometry.");
+    RequireNear(customSpiral.Vertices[50].X, custom.R1, 1e-12,
+        "The midpoint sample at t=0 must reflect custom r1.");
+    RequireNear(customSpiral.Vertices[50].Z, custom.R2, 1e-12,
+        "The midpoint sample at t=0 must reflect custom r2.");
+
+    RequireThrows<ArgumentOutOfRangeException>(
+        () => generator.Generate(parameters with { SampleCount = 1 }),
+        "A curve needs at least two samples.");
+    RequireValidTopology(spiral);
+}
+
+static void CheckCurvePlayback()
+{
+    var playback = new CurvePlayback4D(totalSampleCount: 600, durationSeconds: 4.0);
+    Require(playback.VisibleSampleCount == 600 && !playback.IsPlaying,
+        "A spiral must initially be fully visible.");
+
+    playback.Reset();
+    Require(playback.VisibleSampleCount == 1 && playback.Progress == 0.0,
+        "Reset Curve must return to the first sample.");
+    playback.Play();
+    playback.Update(2.0);
+    Require(playback.IsPlaying && playback.VisibleSampleCount == 300,
+        "Half the draw duration must reveal approximately half the samples.");
+    playback.Update(2.0);
+    Require(!playback.IsPlaying && playback.VisibleSampleCount == 600,
+        "Playback must stop exactly at the complete curve.");
+
+    playback.Play();
+    Require(playback.IsPlaying && playback.VisibleSampleCount == 1,
+        "Play Curve at the end must restart from P0.");
+    playback.SetTotalSampleCount(200, showComplete: true);
+    Require(!playback.IsPlaying && playback.VisibleSampleCount == 200,
+        "Regeneration must update playback to the new complete sample set.");
+
+    var curveDisplay = new DisplayOptions(
+        showCells: false,
+        showEdges: true,
+        showVertices: false,
+        showDirection: true);
+    Require(!curveDisplay.ShowCells && curveDisplay.ShowEdges &&
+        !curveDisplay.ShowVertices && curveDisplay.ShowDirection,
+        "Curve defaults must be Curve ON, Points OFF, Direction ON.");
+}
+
+static void CheckCommonGeometryProjection()
+{
+    IGeometry4D[] geometries =
+    [
+        new Tesseract4D(),
+        new Hypersphere4D(),
+        new Simplex4D(),
+        new IrregularPolytope4D(),
+        new Spiral4DGenerator().Generate(SpiralParameters.Default)
+    ];
+    var pipeline = new WireframeProjectionPipeline4D();
+    var camera = new Camera4D();
+    var projector = new PerspectiveProjector4D();
+
+    foreach (var geometry in geometries)
+    {
+        var sceneObject = new SceneObject4D(geometry);
+        var initial = pipeline.Project(geometry, sceneObject.Transform, camera, projector);
+        Require(initial.VisibleVertexCount == geometry.Vertices.Count,
+            $"Default camera must safely project every {geometry.Name} vertex.");
+        Require(initial.VisibleEdgeCount == geometry.Edges.Count,
+            $"Default camera must safely project every {geometry.Name} edge.");
+
+        sceneObject.Transform.Rotate(RotationPlane4D.XW, 0.37);
+        var rotated = pipeline.Project(geometry, sceneObject.Transform, camera, projector);
+        Require(initial.Vertices.Zip(rotated.Vertices)
+            .Any(pair => pair.First.Position != pair.Second.Position),
+            $"The shared XW transform must visibly change {geometry.Name}.");
+    }
+
+    var spiral = new Spiral4DGenerator().Generate(SpiralParameters.Default);
+    var spiralTransform = new Transform4D();
+    spiralTransform.Rotate(RotationPlane4D.XW, Math.PI / 2.0);
+    var projectedSpiral = pipeline.Project(spiral, spiralTransform, camera, projector);
+    RequireNear(projectedSpiral.Vertices[0].SourceW, 0.0, 1e-12,
+        "Projection metadata must preserve the curve's original local W.");
+    RequireNear(projectedSpiral.Vertices[0].WorldW, spiral.Parameters.R1, 1e-12,
+        "Projection metadata must expose transformed world W for curve coloring.");
+
+    var firstObject = new SceneObject4D(geometries[0]);
+    var secondObject = new SceneObject4D(geometries[1]);
+    firstObject.DisplayOptions.ToggleEdges();
+    firstObject.Transform.MoveWorld(new Vector4D(1.0, 0.0, 0.0, 0.0));
+    Require(secondObject.DisplayOptions.ShowEdges,
+        "Scene objects must keep independent display state.");
+    Require(secondObject.Transform.Position == Vector4D.Zero,
+        "Scene objects must keep independent 4D transforms.");
+}
+
+static void RequireValidTopology(IGeometry4D geometry)
+{
+    foreach (var edge in geometry.Edges)
+    {
+        Require(edge.Start >= 0 && edge.Start < geometry.Vertices.Count &&
+            edge.End >= 0 && edge.End < geometry.Vertices.Count &&
+            edge.Start != edge.End,
+            $"{geometry.Name} contains an invalid edge index.");
+    }
+
+    foreach (var face in geometry.Faces)
+    {
+        Require(face.VertexIndices.All(index => index >= 0 && index < geometry.Vertices.Count),
+            $"{geometry.Name} contains an invalid face index.");
+    }
+}
+
+static void RequireEachCellFaceSharedTwice(IGeometry4D geometry)
+{
+    var memberships = geometry.Cells
+        .SelectMany(cell => cell.Faces)
+        .GroupBy(face => string.Join(",", face.VertexIndices.OrderBy(index => index)))
+        .ToDictionary(group => group.Key, group => group.Count());
+    Require(memberships.Count == geometry.Faces.Count,
+        $"{geometry.Name} cell faces must match its unique face collection.");
+    Require(memberships.Values.All(count => count == 2),
+        $"Every {geometry.Name} boundary face must be shared by two 3D cells.");
 }
 
 static void CheckReferenceGrid()
@@ -462,6 +740,10 @@ static void CheckDisplayLayerState()
     Require(!options.ShowGrid && !options.ShowAxes && !options.ShowCells &&
         !options.ShowEdges && !options.ShowVertices,
         "Every display layer must toggle independently.");
+    Require(!options.ShowDirection,
+        "Direction markers must remain opt-in for non-curve geometry.");
+    options.ToggleDirection();
+    Require(options.ShowDirection, "Direction marker state must toggle independently.");
 
     Require(VisualizationPalette.CellColorCount == 8,
         "The cell legend and renderer must share exactly eight colors.");
@@ -769,6 +1051,21 @@ static void Require(bool condition, string message)
     {
         throw new InvalidOperationException(message);
     }
+}
+
+static void RequireThrows<TException>(Action action, string message)
+    where TException : Exception
+{
+    try
+    {
+        action();
+    }
+    catch (TException)
+    {
+        return;
+    }
+
+    throw new InvalidOperationException(message);
 }
 
 static void RequireNear(double actual, double expected, double tolerance, string message)

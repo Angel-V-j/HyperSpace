@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using HyperSpace.Mathematics;
 
 namespace HyperSpace.Geometry;
@@ -7,14 +8,15 @@ namespace HyperSpace.Geometry;
 /// <summary>
 /// An algorithmically generated four-dimensional hypercube.
 /// </summary>
-public sealed class Tesseract4D
+public sealed class Tesseract4D : IGeometry4D
 {
     private const int DimensionCount = 4;
     private const int VertexCount = 1 << DimensionCount;
 
     private readonly Vector4D[] _vertices;
     private readonly Edge[] _edges;
-    private readonly TesseractCell4D[] _cells;
+    private readonly Face4D[] _faces;
+    private readonly Cell4D[] _cells;
 
     public Tesseract4D(double halfExtent = 1.0)
     {
@@ -28,13 +30,26 @@ public sealed class Tesseract4D
         _vertices = CreateVertices(halfExtent);
         _edges = CreateEdges();
         _cells = CreateCells();
+        _faces = _cells
+            .SelectMany(cell => cell.Faces)
+            .GroupBy(face => string.Join(",", face.VertexIndices.OrderBy(index => index)))
+            .Select(group => group.First())
+            .ToArray();
     }
+
+    public string Name => "Tesseract";
+
+    public GeometryVisualStyle4D VisualStyle => GeometryVisualStyle4D.Tesseract;
 
     public IReadOnlyList<Vector4D> Vertices => _vertices;
 
     public IReadOnlyList<Edge> Edges => _edges;
 
-    public IReadOnlyList<TesseractCell4D> Cells => _cells;
+    public IReadOnlyList<Face4D> Faces => _faces;
+
+    public IReadOnlyList<Cell4D> Cells => _cells;
+
+    public string ResolutionDescription => "Exact 4D hypercube";
 
     private static Vector4D[] CreateVertices(double halfExtent)
     {
@@ -77,9 +92,9 @@ public sealed class Tesseract4D
         return edges.ToArray();
     }
 
-    private static TesseractCell4D[] CreateCells()
+    private static Cell4D[] CreateCells()
     {
-        var cells = new List<TesseractCell4D>(capacity: 8);
+        var cells = new List<Cell4D>(capacity: 8);
 
         for (var fixedDimension = 0; fixedDimension < DimensionCount; fixedDimension++)
         {
@@ -95,20 +110,23 @@ public sealed class Tesseract4D
                     }
                 }
 
-                cells.Add(new TesseractCell4D(
-                    (CoordinateAxis4D)fixedDimension,
-                    fixedBit == 0 ? -1 : 1,
+                var axis = (CoordinateAxis4D)fixedDimension;
+                var sign = fixedBit == 0 ? -1 : 1;
+                cells.Add(new Cell4D(
+                    $"{axis}{(sign < 0 ? "-" : "+")}",
                     vertexIndices,
-                    CreateCellFaces(fixedDimension, fixedBit)));
+                    CreateCellFaces(fixedDimension, fixedBit),
+                    axis,
+                    sign));
             }
         }
 
         return cells.ToArray();
     }
 
-    private static QuadFace[] CreateCellFaces(int fixedDimension, int fixedBit)
+    private static Face4D[] CreateCellFaces(int fixedDimension, int fixedBit)
     {
-        var faces = new List<QuadFace>(capacity: 6);
+        var faces = new List<Face4D>(capacity: 6);
 
         for (var faceDimension = 0; faceDimension < DimensionCount; faceDimension++)
         {
@@ -136,7 +154,7 @@ public sealed class Tesseract4D
                 var firstFreeBit = 1 << freeDimensions[0];
                 var secondFreeBit = 1 << freeDimensions[1];
 
-                faces.Add(new QuadFace(
+                faces.Add(new Face4D(
                     baseVertex,
                     baseVertex | firstFreeBit,
                     baseVertex | firstFreeBit | secondFreeBit,

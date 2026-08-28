@@ -3,20 +3,21 @@
 HyperSpace is a small MonoGame desktop sandbox for understanding and visualizing
 four-dimensional Euclidean space. It is not a game at this stage.
 
-The current milestone renders one algorithmically generated tesseract, its eight
-real cubical boundary cells, and a small 4D spatial reference grid through a
-real 4D perspective pipeline. A minimal side panel starts observable, one-second
-4D transform animations and independently controls the visual layers:
+The current milestone renders one selected 4D object plus a small 4D spatial
+reference grid through a real 4D perspective pipeline. The selectable objects
+are an exact tesseract, a sampled hypersphere S3, a regular 4-simplex, a
+deterministic irregular 16-cell, and a procedural 4D spiral curve. A minimal side panel switches objects, starts
+observable one-second 4D transform animations, and controls the visual layers:
 
 ```text
 UI or direct keyboard/mouse input
 -> TransformationAnimator4D update (for panel requests)
--> Tesseract4D or ReferenceGrid4D vertices
+-> selected IGeometry4D or ReferenceGrid4D vertices
 -> Transform4D uniform 4D scale, rotation, and translation
 -> Camera4D view transformation
 -> 4D perspective projection
 -> Wireframe3D
--> translucent cell faces + axis-coded edges + W-coded vertex markers
+-> translucent faces/cells or a W-coded 3D polyline
 -> MonoGame 3D view and perspective projection
 -> screen
 ```
@@ -39,8 +40,8 @@ All rotations are continuous while a key is held.
 | Rotate object in ZW | `L` / `;` |
 | Rotate Camera4D | Hold `Shift` with any rotation pair |
 | Orbit the post-projection 3D view | Hold left mouse button and drag |
-| Move the tesseract in X/Y | Hold right mouse button and drag |
-| Move the tesseract in Z/W | Hold middle mouse button and drag |
+| Move the selected object in X/Y | Hold right mouse button and drag |
+| Move the selected object in Z/W | Hold middle mouse button and drag |
 | Zoom the post-projection 3D view | Mouse wheel |
 | Change 4D focal distance | `[` / `]` |
 | Reset all transforms and cameras | `Space` |
@@ -51,6 +52,7 @@ direct control above:
 
 | Panel action | Result over 1 second |
 | --- | --- |
+| `TESSERACT`, `HYPERSPHERE`, `4-SIMPLEX`, `IRREGULAR`, `4D SPIRAL` | Selects the only rendered object; Camera4D, 3D view, and projection remain unchanged |
 | `XY`, `XZ`, `XW`, `YZ`, `YW`, `ZW +90` | Adds a positive 90-degree rotation in that exact 4D coordinate plane |
 | `SCALE +` | Multiplies uniform XYZW scale by 1.25 |
 | `SCALE -` | Multiplies uniform XYZW scale by 0.8 |
@@ -62,24 +64,44 @@ direct control above:
 | `RESET CAMERA` | Cancels animation; restores Camera4D, 3D orbit view, and focal distance |
 | `SHOW GRID` | Toggles the minor 4D reference-grid lines |
 | `SHOW AXES` | Toggles the X/Y/Z axes and offset W rails |
-| `SHOW CELLS` | Toggles the eight translucent cubical cell shells |
-| `SHOW EDGES` | Toggles all 32 direction-coded tesseract edges |
-| `SHOW VERTICES` | Toggles all 16 W-coded vertex markers |
+| `SHOW SURFACE` | Toggles translucent sampled faces or boundary-cell faces |
+| `SHOW EDGES` | Toggles all topology/parameter-mesh edges |
+| `SHOW VERTICES` | Toggles all sampled/topological vertex markers |
+
+When `4D SPIRAL` is selected, the Object panel adds curve-specific controls:
+
+| Curve action | Result |
+| --- | --- |
+| `r1 -/+`, `r2 -/+` | Changes the pending XY or ZW radius by 0.10 within `[0.10, 3.00]` |
+| `k -/+` | Changes the pending ZW angular frequency by 0.25 within `[0.25, 6.00]` |
+| `Samples -/+` | Changes the pending sample count by 100 within `[100, 1200]` |
+| `REGENERATE` | Replaces only the spiral geometry; object transform and both cameras are preserved |
+| `PLAY CURVE` | Restarts at P0 when complete, then reveals the polyline over four seconds |
+| `RESET CURVE` | Stops playback and leaves only P0 visible |
+| `SHOW CURVE` | Toggles the projected polyline; default ON |
+| `SHOW POINTS` | Toggles the numerical samples; default OFF |
+| `SHOW DIRECTION` | Toggles the green START octahedron and yellow END/current-tip cube; default ON |
 
 Only one panel animation runs at a time. Transform buttons are disabled until
 it finishes; reset buttons remain available and cancel it immediately. A later
 click starts a new additive step, so three completed `XW +90` clicks accumulate
 to +270 degrees. Keyboard controls remain live during an animation. Scene mouse
 gestures are suppressed only while the pointer is over the panel, preventing a
-UI click from also orbiting or moving the tesseract.
+UI click from also orbiting or moving the selected object. Each selectable
+object retains its own `Transform4D` and display toggles. Switching cancels an
+active object animation, but deliberately does not reset either camera or the
+4D projection.
 
 Mouse movement is relative. Dragging right increases object X or Z; dragging up
 increases object Y or W, depending on the held mouse button.
 
 Tesseract edge hue represents the mathematical direction that changes: X, Y, Z,
-or W. Brightness still carries the previous camera-space W depth cue: nearer
-endpoints are brighter. Vertex hue represents the stable source layer `W-` or
-`W+`. These are visual annotations; geometry still comes from 4D projection.
+or W. The other objects use their own W-gradient palettes. Edge brightness also
+carries camera-space W depth, while face and vertex color uses local source W.
+These are visual annotations; geometry still comes from 4D projection.
+For the spiral specifically, color uses transformed world-space W: W=0 is the
+middle of the cyan-to-pink gradient, so rotations and W translations change the
+color from the actual current fourth coordinate.
 
 ## Visual layers
 
@@ -88,13 +110,14 @@ The scene is deliberately rendered in this order:
 ```text
 background
 -> 4D grid and axes
--> translucent cell faces
--> 32 opaque wireframe edges
--> 16 small octahedral vertex markers
+-> translucent surface or cell faces
+-> opaque topology/parameter edges
+-> small octahedral sampled/topological vertex markers
+-> spiral START/END direction markers
 -> object/camera debug panel
 ```
 
-`VisualizationPalette.CellSurfaceAlpha` is the single cell-opacity setting and
+`VisualizationPalette.CellSurfaceAlpha` is the single surface-opacity setting and
 defaults to `0.18`. The Display panel legend reads from the exact same palette
 as the scene renderer, so its cell, edge, and vertex colors cannot drift from
 the actual visualization.
@@ -103,7 +126,8 @@ the actual visualization.
 
 ```text
 Mathematics/       renderer-independent Vector3D and Vector4D values
-Geometry/          tesseract cells/faces/edges, ReferenceGrid4D, and Wireframe3D
+Geometry/          common topology, polytopes, S3, spiral parameters/generator, grid
+Scene/             geometry instance state plus curve-prefix playback state
 Transformations/   six-plane rotation, object transform, and time-based animator
 Projection/        Camera4D, perspective projection, and pipeline orchestration
 Rendering/         visual layers, shared palette/options, orbit camera, debug overlay
@@ -124,10 +148,36 @@ SandboxGame.cs     application update/draw loop
   eight existing tesseract vertices and six algorithmically generated square
   faces. Every vertex belongs to four cells; every one of the 24 unique square
   faces is shared by exactly two cells.
+- `Hypersphere4D` samples the 3-sphere with
+  `x=r sin(chi) sin(theta) cos(phi)`,
+  `y=r sin(chi) sin(theta) sin(phi)`, `z=r sin(chi) cos(theta)`, and
+  `w=r cos(chi)`. Thus every generated point satisfies
+  `x^2+y^2+z^2+w^2=r^2`. The default configurable resolution is 4 chi, 4 theta,
+  and 8 phi intervals: 80 vertices, 272 parameter-mesh edges, and 96 polygonal
+  faces across three constant-chi 2-sphere shells.
+- `Simplex4D` is a regular pentachoron centered at the origin. Its five vertices
+  have equal radius and pairwise dot product `-r^2/4`; combinations generate all
+  10 edges, 10 triangular faces, and 5 tetrahedral cells.
+- `IrregularPolytope4D` is not a deformed hypercube. It is an asymmetric,
+  centered realization of the 4D cross-polytope topology: eight signed-axis
+  vertices receive unequal radii and a fixed invertible shear. Combinatorics,
+  rather than a fragile runtime convex-hull guess, deterministically generates
+  24 edges, 32 triangular faces, and 16 tetrahedral cells.
+- `Spiral4DGenerator` samples
+  `P(t)=(r1 cos(t), r1 sin(t), r2 cos(k t), r2 sin(k t))`. Every sample therefore
+  obeys `x^2+y^2=r1^2` and `z^2+w^2=r2^2`. Consecutive samples alone are joined,
+  producing an open polyline with `N` vertices and `N-1` edges. Defaults are
+  `r1=1.0`, `r2=0.5`, `k=2.25`, `N=600`, and `t=0..4pi`. The non-integer default
+  frequency deliberately keeps START and END distinct; `k=2` over this range
+  would retrace a closed curve and place both direction markers together.
+- `IGeometry4D` exposes only immutable vertices, edges, faces, cells, name/style,
+  and sampling information. `SceneObject4D` composes that topology with a common
+  transform and display state. There is no renderer class per shape.
 - `ReferenceGrid4D` contains X/Y/Z coordinate crosses in five W layers and six
   W-parallel rails at non-zero X/Y/Z offsets. The central W axis is not drawn as
   a fake line: under this projection `(0,0,0,w)` correctly collapses to the 3D
-  origin. Both the grid and tesseract use `WireframeProjectionPipeline4D`.
+  origin. Both the grid and every selected object use
+  `WireframeProjectionPipeline4D`.
 - A `Rotation4D` is the ordered composition `XY -> XZ -> XW -> YZ -> YW -> ZW`.
   Each component is a standard two-dimensional rotation in that coordinate
   plane. The order is explicit because 4D rotations generally do not commute.
@@ -144,7 +194,7 @@ SandboxGame.cs     application update/draw loop
   `Projection/README.md`.
 - `Wireframe3D` is a real intermediate representation. Only after it is built
   are its vertices converted to MonoGame `Vector3` values and passed through a
-  normal 3D view/projection using `BasicEffect`. Cells reuse those same projected
+  normal 3D view/projection using `BasicEffect`. Faces reuse those same projected
   vertex indices; no second or approximate projection path exists.
 
 ## Animation model
@@ -156,6 +206,12 @@ translation are applied as incremental deltas, so direct keyboard/mouse changes
 made during the animation are not overwritten. Uniform scale uses the same
 incremental approach with exponential interpolation, making factors 1.25 and
 0.8 reciprocal paths.
+
+`CurvePlayback4D` is independent of object transformation animation. It never
+mutates or regenerates geometry; it advances a visible sample count and the
+renderer draws only the prefix `P0..Pn` from the already projected
+`Wireframe3D`. Transform rotations, camera movement, and curve playback can
+therefore remain active without separate projection logic.
 
 ## Build and run
 
@@ -176,16 +232,22 @@ dotnet run --project Checks\HyperSpace.MathChecks.csproj
   is invalid, the whole edge is skipped safely. This can cause edge popping when
   Camera4D passes through the object, but avoids division by zero and infinities.
 - The 3D wireframe uses one-pixel MonoGame line primitives. Edge direction sets
-  hue and camera-space W depth sets brightness, not thickness.
-- Each square boundary face belongs to two differently colored cells. Both are
-  rendered, so their translucent colors intentionally mix on the shared face.
+  hue and camera-space W depth sets brightness, not thickness. The spiral is a
+  smooth 600-segment approximation, but it is not rendered as a thick tube.
+- Polytope boundary faces belong to two differently colored 3D cells. Both are
+  rendered, so their translucent colors intentionally mix on a shared face.
+- S3 is a three-dimensional manifold in 4D, not a two-dimensional boundary
+  skin. The current translucent geometry shows sampled constant-chi 2-sphere
+  shells and connects them with parameter edges. This is mathematically honest
+  sampling, but not a volumetric tetrahedralization of the whole S3 manifold.
 - Transparent triangles use `NonPremultiplied` alpha blending, no depth writes,
-  and back-to-front centroid sorting. This is a good approximation for 96 tiny
-  triangles, but intersecting/shared transparent faces have no globally perfect
+  and back-to-front centroid sorting. This is a useful small-mesh approximation,
+  but intersecting/shared transparent faces have no globally perfect
   draw order without order-independent transparency or mesh splitting.
 - Vertex markers are small 3D octahedra drawn last without depth testing. This
-  makes all sixteen topological vertices readable, but they behave as structural
-  annotations rather than physically occluded solid spheres.
+  makes all sampled/topological vertices readable, but they behave as structural
+  annotations rather than physically occluded solid spheres. Spiral START and
+  END markers follow the same annotation rule.
 - The reference grid is intentionally a sparse coordinate frame rather than a
   full 4D lattice. A full lattice becomes visually dense very quickly.
 - Rotation angles are an ordered six-plane composition, not a general 4D
@@ -202,8 +264,11 @@ dotnet run --project Checks\HyperSpace.MathChecks.csproj
   than camera-local axes.
 - The debug font currently uses the Windows `Segoe UI` system font during the
   content build.
-- The side-panel layout targets the default 1280x720 window. Resizing below
-  roughly 720 pixels high can clip the lower legend; no scroll layout exists.
+- The side-panel layout targets the default 1280x900 window. Resizing below
+  roughly 900 pixels high can clip the lower controls; no scroll layout exists.
+- Spiral `tStart` and `tEnd` are configurable in `SpiralParameters`, but the
+  current compact UI changes only r1, r2, k, and sample count. Parameter edits
+  are intentionally pending until `REGENERATE` is pressed.
 - There is no slicing, physics, collision, gameplay, opaque solid geometry, or
   general-purpose UI framework.
 

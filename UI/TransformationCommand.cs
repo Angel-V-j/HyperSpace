@@ -2,6 +2,11 @@ namespace HyperSpace.UI;
 
 public enum TransformationCommand
 {
+    SelectTesseract,
+    SelectHypersphere,
+    SelectSimplex,
+    SelectIrregular,
+    SelectSpiral,
     RotateXY,
     RotateXZ,
     RotateXW,
@@ -24,5 +29,19 @@ public enum TransformationCommand
     ToggleAxes,
     ToggleCells,
     ToggleEdges,
-    ToggleVertices
+    ToggleVertices,
+    DecreaseSpiralR1,
+    IncreaseSpiralR1,
+    DecreaseSpiralR2,
+    IncreaseSpiralR2,
+    DecreaseSpiralK,
+    IncreaseSpiralK,
+    DecreaseSpiralSamples,
+    IncreaseSpiralSamples,
+    RegenerateSpiral,
+    PlayCurve,
+    ResetCurve,
+    ToggleCurve,
+    ToggleCurvePoints,
+    ToggleCurveDirection
 }

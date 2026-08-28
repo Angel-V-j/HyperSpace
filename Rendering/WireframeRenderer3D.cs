@@ -8,7 +8,7 @@ using Microsoft.Xna.Framework.Graphics;
 namespace HyperSpace.Rendering;
 
 /// <summary>
-/// Renders the projected tesseract layers and reference lines with BasicEffect.
+/// Renders any projected 4D geometry and the common reference lines with BasicEffect.
 /// </summary>
 public sealed class WireframeRenderer3D : IDisposable
 {
@@ -31,9 +31,17 @@ public sealed class WireframeRenderer3D : IDisposable
     public void Draw(
         GraphicsDevice graphicsDevice,
         Wireframe3D wireframe,
-        OrbitCamera3D camera)
+        IGeometry4D geometry,
+        OrbitCamera3D camera,
+        int visibleVertexLimit = int.MaxValue)
     {
-        DrawInternal(graphicsDevice, wireframe, camera, isReferenceGrid: false);
+        DrawInternal(
+            graphicsDevice,
+            wireframe,
+            geometry,
+            camera,
+            isReferenceGrid: false,
+            visibleVertexLimit: visibleVertexLimit);
     }
 
     public void DrawReferenceGrid(
@@ -46,36 +54,42 @@ public sealed class WireframeRenderer3D : IDisposable
         DrawInternal(
             graphicsDevice,
             wireframe,
+            geometry: null,
             camera,
             isReferenceGrid: true,
             showGrid,
             showAxes);
     }
 
-    public void DrawCells(
+    public void DrawSurfaces(
         GraphicsDevice graphicsDevice,
         Wireframe3D wireframe,
-        IReadOnlyList<TesseractCell4D> cells,
+        IGeometry4D geometry,
         OrbitCamera3D camera)
     {
         _transparentTriangles.Clear();
         var view = camera.View;
 
-        for (var cellIndex = 0; cellIndex < cells.Count; cellIndex++)
+        if (geometry.Cells.Count > 0)
         {
-            var color = WithAlpha(
-                VisualizationPalette.CellColor(cellIndex),
-                VisualizationPalette.CellSurfaceAlpha);
-
-            foreach (var face in cells[cellIndex].Faces)
+            for (var cellIndex = 0; cellIndex < geometry.Cells.Count; cellIndex++)
             {
-                if (!TryGetFace(wireframe, face, out var a, out var b, out var c, out var d))
+                foreach (var face in geometry.Cells[cellIndex].Faces)
                 {
-                    continue;
+                    AddFaceTriangles(
+                        wireframe,
+                        face,
+                        geometry,
+                        cellIndex,
+                        view);
                 }
-
-                AddTransparentTriangle(a, b, c, color, view);
-                AddTransparentTriangle(a, c, d, color, view);
+            }
+        }
+        else
+        {
+            foreach (var face in geometry.Faces)
+            {
+                AddFaceTriangles(wireframe, face, geometry, cellIndex: null, view);
             }
         }
 
@@ -118,25 +132,41 @@ public sealed class WireframeRenderer3D : IDisposable
     public void DrawVertices(
         GraphicsDevice graphicsDevice,
         Wireframe3D wireframe,
-        OrbitCamera3D camera)
+        IGeometry4D geometry,
+        OrbitCamera3D camera,
+        int visibleVertexLimit = int.MaxValue)
     {
+        var effectiveLimit = Math.Clamp(visibleVertexLimit, 0, wireframe.Vertices.Count);
         const int trianglesPerMarker = 8;
         const int verticesPerTriangle = 3;
         EnsureTriangleVertexCapacity(
-            wireframe.VisibleVertexCount * trianglesPerMarker * verticesPerTriangle);
+            effectiveLimit * trianglesPerMarker * verticesPerTriangle);
         var writtenVertexCount = 0;
+        var (minimumW, maximumW) = FindVisibleColorWRange(
+            wireframe,
+            geometry,
+            effectiveLimit);
 
-        foreach (var vertex in wireframe.Vertices)
+        for (var vertexIndex = 0; vertexIndex < effectiveLimit; vertexIndex++)
         {
+            var vertex = wireframe.Vertices[vertexIndex];
             if (!vertex.IsVisible || !TryConvert(vertex.Position, out var center))
             {
                 continue;
             }
 
-            var color = vertex.SourceW < 0.0
-                ? VisualizationPalette.VertexNegativeW
-                : VisualizationPalette.VertexPositiveW;
-            WriteOctahedron(center, color, ref writtenVertexCount);
+            var color = WDepthColor(
+                geometry.VisualStyle,
+                ColorW(geometry, vertex),
+                minimumW,
+                maximumW);
+            var radius = geometry.VisualStyle switch
+            {
+                GeometryVisualStyle4D.Hypersphere => VertexMarkerRadius * 0.58f,
+                GeometryVisualStyle4D.Spiral => VertexMarkerRadius * 0.40f,
+                _ => VertexMarkerRadius
+            };
+            WriteOctahedron(center, color, radius, ref writtenVertexCount);
         }
 
         if (writtenVertexCount == 0)
@@ -162,23 +192,92 @@ public sealed class WireframeRenderer3D : IDisposable
         }
     }
 
-    private void DrawInternal(
+    public void DrawCurveDirectionMarkers(
         GraphicsDevice graphicsDevice,
         Wireframe3D wireframe,
         OrbitCamera3D camera,
+        int visibleVertexLimit)
+    {
+        var effectiveLimit = Math.Clamp(visibleVertexLimit, 0, wireframe.Vertices.Count);
+        if (effectiveLimit == 0)
+        {
+            return;
+        }
+
+        EnsureTriangleVertexCapacity(60);
+        var writtenVertexCount = 0;
+        var start = wireframe.Vertices[0];
+        if (start.IsVisible && TryConvert(start.Position, out var startPosition))
+        {
+            // START is an octahedron.
+            WriteOctahedron(
+                startPosition,
+                VisualizationPalette.CurveStart,
+                VertexMarkerRadius * 1.45f,
+                ref writtenVertexCount);
+        }
+
+        var endIndex = effectiveLimit - 1;
+        var end = wireframe.Vertices[endIndex];
+        if (endIndex > 0 && end.IsVisible && TryConvert(end.Position, out var endPosition))
+        {
+            // END/current playback tip is a geometrically distinct cube.
+            WriteCube(
+                endPosition,
+                VisualizationPalette.CurveEnd,
+                VertexMarkerRadius * 1.35f,
+                ref writtenVertexCount);
+        }
+
+        if (writtenVertexCount == 0)
+        {
+            return;
+        }
+
+        graphicsDevice.BlendState = BlendState.Opaque;
+        graphicsDevice.DepthStencilState = DepthStencilState.None;
+        graphicsDevice.RasterizerState = RasterizerState.CullNone;
+        ApplyCamera(graphicsDevice, camera);
+
+        foreach (var pass in _effect.CurrentTechnique.Passes)
+        {
+            pass.Apply();
+            graphicsDevice.DrawUserPrimitives(
+                PrimitiveType.TriangleList,
+                _triangleVertices,
+                vertexOffset: 0,
+                primitiveCount: writtenVertexCount / 3);
+        }
+    }
+
+    private void DrawInternal(
+        GraphicsDevice graphicsDevice,
+        Wireframe3D wireframe,
+        IGeometry4D? geometry,
+        OrbitCamera3D camera,
         bool isReferenceGrid,
         bool showGrid = true,
-        bool showAxes = true)
+        bool showAxes = true,
+        int visibleVertexLimit = int.MaxValue)
     {
+        var effectiveLimit = Math.Clamp(visibleVertexLimit, 0, wireframe.Vertices.Count);
         EnsureVertexCapacity(wireframe.Edges.Count * 2);
 
         var (minimumDepth, maximumDepth) = isReferenceGrid
             ? (0.0, 0.0)
-            : FindVisibleDepthRange(wireframe);
+            : FindVisibleDepthRange(wireframe, effectiveLimit);
+        var (minimumW, maximumW) = isReferenceGrid
+            ? (0.0, 0.0)
+            : FindVisibleColorWRange(wireframe, geometry!, effectiveLimit);
         var writtenVertexCount = 0;
 
         foreach (var edge in wireframe.Edges)
         {
+            if (edge.Start >= effectiveLimit || edge.End >= effectiveLimit)
+            {
+                continue;
+            }
+
             if (isReferenceGrid && !ShouldDrawReferenceEdge(edge.Kind, showGrid, showAxes))
             {
                 continue;
@@ -206,18 +305,26 @@ public sealed class WireframeRenderer3D : IDisposable
             {
                 _lineVertices[writtenVertexCount++] = new VertexPositionColor(
                     startPosition,
-                    DirectionAndDepthColor(
-                        edge.Axis,
+                    ObjectEdgeColor(
+                        geometry!,
+                        edge,
+                        start,
                         start.CameraDepth4D,
                         minimumDepth,
-                        maximumDepth));
+                        maximumDepth,
+                        minimumW,
+                        maximumW));
                 _lineVertices[writtenVertexCount++] = new VertexPositionColor(
                     endPosition,
-                    DirectionAndDepthColor(
-                        edge.Axis,
+                    ObjectEdgeColor(
+                        geometry!,
+                        edge,
+                        end,
                         end.CameraDepth4D,
                         minimumDepth,
-                        maximumDepth));
+                        maximumDepth,
+                        minimumW,
+                        maximumW));
             }
         }
 
@@ -269,13 +376,15 @@ public sealed class WireframeRenderer3D : IDisposable
     }
 
     private static (double Minimum, double Maximum) FindVisibleDepthRange(
-        Wireframe3D wireframe)
+        Wireframe3D wireframe,
+        int visibleVertexLimit)
     {
         var minimum = double.PositiveInfinity;
         var maximum = double.NegativeInfinity;
 
-        foreach (var vertex in wireframe.Vertices)
+        for (var index = 0; index < visibleVertexLimit; index++)
         {
+            var vertex = wireframe.Vertices[index];
             if (!vertex.IsVisible)
             {
                 continue;
@@ -290,18 +399,78 @@ public sealed class WireframeRenderer3D : IDisposable
             : (0.0, 0.0);
     }
 
-    private static Color DirectionAndDepthColor(
-        CoordinateAxis4D? axis,
+    private static (double Minimum, double Maximum) FindVisibleColorWRange(
+        Wireframe3D wireframe,
+        IGeometry4D geometry,
+        int visibleVertexLimit)
+    {
+        var minimum = double.PositiveInfinity;
+        var maximum = double.NegativeInfinity;
+        // Curve colors stay stable while a prefix is revealed. Hidden projected
+        // points still carry finite world W metadata, so the full curve defines
+        // one consistent W scale for the entire playback.
+        var rangeLimit = geometry.VisualStyle == GeometryVisualStyle4D.Spiral
+            ? wireframe.Vertices.Count
+            : visibleVertexLimit;
+
+        for (var index = 0; index < rangeLimit; index++)
+        {
+            var vertex = wireframe.Vertices[index];
+            if (!vertex.IsVisible && geometry.VisualStyle != GeometryVisualStyle4D.Spiral)
+            {
+                continue;
+            }
+
+            var w = ColorW(geometry, vertex);
+            minimum = Math.Min(minimum, w);
+            maximum = Math.Max(maximum, w);
+        }
+
+        return double.IsFinite(minimum) ? (minimum, maximum) : (0.0, 0.0);
+    }
+
+    private static (double Minimum, double Maximum) FindVisibleSourceWRange(
+        Wireframe3D wireframe)
+    {
+        var minimum = double.PositiveInfinity;
+        var maximum = double.NegativeInfinity;
+
+        foreach (var vertex in wireframe.Vertices)
+        {
+            if (!vertex.IsVisible)
+            {
+                continue;
+            }
+
+            minimum = Math.Min(minimum, vertex.SourceW);
+            maximum = Math.Max(maximum, vertex.SourceW);
+        }
+
+        return double.IsFinite(minimum) ? (minimum, maximum) : (0.0, 0.0);
+    }
+
+    private static Color ObjectEdgeColor(
+        IGeometry4D geometry,
+        Edge edge,
+        ProjectedVertex3D vertex,
         double depth,
         double minimum,
-        double maximum)
+        double maximum,
+        double minimumW,
+        double maximumW)
     {
         var range = maximum - minimum;
         var normalizedDepth = range > 1e-12
             ? (float)Math.Clamp((depth - minimum) / range, 0.0, 1.0)
             : 0.5f;
         var brightness = 1.0f - (0.38f * normalizedDepth);
-        var baseColor = VisualizationPalette.EdgeColor(axis);
+        var baseColor = geometry.VisualStyle == GeometryVisualStyle4D.Tesseract
+            ? VisualizationPalette.EdgeColor(edge.Axis)
+            : WDepthColor(
+                geometry.VisualStyle,
+                ColorW(geometry, vertex),
+                minimumW,
+                maximumW);
 
         return new Color(
             (byte)(baseColor.R * brightness),
@@ -329,6 +498,74 @@ public sealed class WireframeRenderer3D : IDisposable
     private static Color WithAlpha(Color color, float alpha) =>
         new(color.R, color.G, color.B, (byte)Math.Round(byte.MaxValue * alpha));
 
+    private void AddFaceTriangles(
+        Wireframe3D wireframe,
+        Face4D face,
+        IGeometry4D geometry,
+        int? cellIndex,
+        Matrix view)
+    {
+        var points = new Vector3[face.VertexIndices.Count];
+        var sourceWSum = 0.0;
+
+        for (var index = 0; index < face.VertexIndices.Count; index++)
+        {
+            var projected = wireframe.Vertices[face.VertexIndices[index]];
+            if (!projected.IsVisible || !TryConvert(projected.Position, out points[index]))
+            {
+                // 4D polygon clipping is deferred. Skipping the whole face is safe
+                // and avoids triangles that cross the perspective singularity.
+                return;
+            }
+
+            sourceWSum += projected.SourceW;
+        }
+
+        var (minimumW, maximumW) = FindVisibleSourceWRange(wireframe);
+        var averageW = sourceWSum / face.VertexIndices.Count;
+        var baseColor = cellIndex.HasValue
+            ? VisualizationPalette.CellColor(cellIndex.Value, geometry.VisualStyle)
+            : WDepthColor(geometry.VisualStyle, averageW, minimumW, maximumW);
+        var color = WithAlpha(baseColor, VisualizationPalette.CellSurfaceAlpha);
+
+        for (var index = 1; index < points.Length - 1; index++)
+        {
+            AddTransparentTriangle(points[0], points[index], points[index + 1], color, view);
+        }
+    }
+
+    private static Color WDepthColor(
+        GeometryVisualStyle4D style,
+        double w,
+        double minimum,
+        double maximum)
+    {
+        float amount;
+        if (style == GeometryVisualStyle4D.Spiral)
+        {
+            // Zero is always the gradient midpoint. Unlike min/max normalization,
+            // this preserves the meaning of W sign when the curve is translated.
+            var maximumMagnitude = Math.Max(Math.Abs(minimum), Math.Abs(maximum));
+            amount = maximumMagnitude > 1e-12
+                ? (float)Math.Clamp(0.5 + (w / (2.0 * maximumMagnitude)), 0.0, 1.0)
+                : 0.5f;
+        }
+        else
+        {
+            var range = maximum - minimum;
+            amount = range > 1e-12
+                ? (float)Math.Clamp((w - minimum) / range, 0.0, 1.0)
+                : 0.5f;
+        }
+
+        return VisualizationPalette.WDepthColor(style, amount);
+    }
+
+    private static double ColorW(IGeometry4D geometry, ProjectedVertex3D vertex) =>
+        geometry.VisualStyle == GeometryVisualStyle4D.Spiral
+            ? vertex.WorldW
+            : vertex.SourceW;
+
     private void AddTransparentTriangle(
         Vector3 a,
         Vector3 b,
@@ -341,14 +578,14 @@ public sealed class WireframeRenderer3D : IDisposable
         _transparentTriangles.Add(new TransparentTriangle(a, b, c, color, viewDepth));
     }
 
-    private void WriteOctahedron(Vector3 center, Color color, ref int index)
+    private void WriteOctahedron(Vector3 center, Color color, float radius, ref int index)
     {
-        var top = center + (Vector3.Up * VertexMarkerRadius);
-        var bottom = center + (Vector3.Down * VertexMarkerRadius);
-        var left = center + (Vector3.Left * VertexMarkerRadius);
-        var right = center + (Vector3.Right * VertexMarkerRadius);
-        var forward = center + (Vector3.Forward * VertexMarkerRadius);
-        var backward = center + (Vector3.Backward * VertexMarkerRadius);
+        var top = center + (Vector3.Up * radius);
+        var bottom = center + (Vector3.Down * radius);
+        var left = center + (Vector3.Left * radius);
+        var right = center + (Vector3.Right * radius);
+        var forward = center + (Vector3.Forward * radius);
+        var backward = center + (Vector3.Backward * radius);
 
         WriteTriangle(top, forward, right, color, ref index);
         WriteTriangle(top, right, backward, color, ref index);
@@ -372,39 +609,35 @@ public sealed class WireframeRenderer3D : IDisposable
         _triangleVertices[index++] = new VertexPositionColor(c, color);
     }
 
+    private void WriteCube(Vector3 center, Color color, float radius, ref int index)
+    {
+        var nnn = center + new Vector3(-radius, -radius, -radius);
+        var nnp = center + new Vector3(-radius, -radius, radius);
+        var npn = center + new Vector3(-radius, radius, -radius);
+        var npp = center + new Vector3(-radius, radius, radius);
+        var pnn = center + new Vector3(radius, -radius, -radius);
+        var pnp = center + new Vector3(radius, -radius, radius);
+        var ppn = center + new Vector3(radius, radius, -radius);
+        var ppp = center + new Vector3(radius, radius, radius);
+
+        WriteTriangle(nnn, npn, ppn, color, ref index);
+        WriteTriangle(nnn, ppn, pnn, color, ref index);
+        WriteTriangle(nnp, pnp, ppp, color, ref index);
+        WriteTriangle(nnp, ppp, npp, color, ref index);
+        WriteTriangle(nnn, nnp, npp, color, ref index);
+        WriteTriangle(nnn, npp, npn, color, ref index);
+        WriteTriangle(pnn, ppn, ppp, color, ref index);
+        WriteTriangle(pnn, ppp, pnp, color, ref index);
+        WriteTriangle(nnn, pnn, pnp, color, ref index);
+        WriteTriangle(nnn, pnp, nnp, color, ref index);
+        WriteTriangle(npn, npp, ppp, color, ref index);
+        WriteTriangle(npn, ppp, ppn, color, ref index);
+    }
+
     private void ApplyCamera(GraphicsDevice graphicsDevice, OrbitCamera3D camera)
     {
         _effect.View = camera.View;
         _effect.Projection = camera.CreateProjection(graphicsDevice.Viewport.AspectRatio);
-    }
-
-    private static bool TryGetFace(
-        Wireframe3D wireframe,
-        QuadFace face,
-        out Vector3 a,
-        out Vector3 b,
-        out Vector3 c,
-        out Vector3 d)
-    {
-        var projectedA = wireframe.Vertices[face.A];
-        var projectedB = wireframe.Vertices[face.B];
-        var projectedC = wireframe.Vertices[face.C];
-        var projectedD = wireframe.Vertices[face.D];
-
-        if (projectedA.IsVisible &&
-            projectedB.IsVisible &&
-            projectedC.IsVisible &&
-            projectedD.IsVisible &&
-            TryConvert(projectedA.Position, out a) &&
-            TryConvert(projectedB.Position, out b) &&
-            TryConvert(projectedC.Position, out c) &&
-            TryConvert(projectedD.Position, out d))
-        {
-            return true;
-        }
-
-        a = b = c = d = Vector3.Zero;
-        return false;
     }
 
     private static bool TryConvert(Vector3D source, out Vector3 destination)

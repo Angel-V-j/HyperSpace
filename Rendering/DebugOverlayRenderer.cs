@@ -3,6 +3,7 @@ using System.Globalization;
 using System.Text;
 using HyperSpace.Geometry;
 using HyperSpace.Projection;
+using HyperSpace.Scene;
 using HyperSpace.Transformations;
 using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Graphics;
@@ -45,22 +46,26 @@ public sealed class DebugOverlayRenderer : IDisposable
     }
 
     public void Draw(
+        IGeometry4D geometry,
         Transform4D objectTransform,
         Camera4D camera4D,
         PerspectiveProjector4D projector,
         OrbitCamera3D camera3D,
         Wireframe3D wireframe,
         TransformationAnimator4D animator,
-        DisplayOptions displayOptions)
+        DisplayOptions displayOptions,
+        CurvePlayback4D curvePlayback)
     {
         BuildText(
+            geometry,
             objectTransform,
             camera4D,
             projector,
             camera3D,
             wireframe,
             animator,
-            displayOptions);
+            displayOptions,
+            curvePlayback);
 
         _spriteBatch.Begin(
             SpriteSortMode.Deferred,
@@ -98,19 +103,48 @@ public sealed class DebugOverlayRenderer : IDisposable
     }
 
     private void BuildText(
+        IGeometry4D geometry,
         Transform4D objectTransform,
         Camera4D camera4D,
         PerspectiveProjector4D projector,
         OrbitCamera3D camera3D,
         Wireframe3D wireframe,
         TransformationAnimator4D animator,
-        DisplayOptions displayOptions)
+        DisplayOptions displayOptions,
+        CurvePlayback4D curvePlayback)
     {
         _text.Clear();
-        AppendFormat("FPS {0,5:0.0}   Visible {1}/16 vertices, {2}/32 edges\n",
-            _framesPerSecond,
+        AppendFormat("{0}   FPS {1,5:0.0}\n", geometry.Name, _framesPerSecond);
+        AppendFormat("Topology  V {0}  E {1}  F {2}  C {3}   Visible V {4}  E {5}\n",
+            geometry.Vertices.Count,
+            geometry.Edges.Count,
+            geometry.Faces.Count,
+            geometry.Cells.Count,
             wireframe.VisibleVertexCount,
             wireframe.VisibleEdgeCount);
+        AppendFormat("Sampling  {0}\n",
+            geometry.ResolutionDescription);
+        if (geometry is Spiral4D spiral)
+        {
+            var sampleIndex = Math.Clamp(
+                curvePlayback.VisibleSampleCount - 1,
+                0,
+                spiral.Vertices.Count - 1);
+            var sample = spiral.Vertices[sampleIndex];
+            var xyRadius = Math.Sqrt((sample.X * sample.X) + (sample.Y * sample.Y));
+            var zwRadius = Math.Sqrt((sample.Z * sample.Z) + (sample.W * sample.W));
+            AppendFormat("Curve  r1 {0:0.00}  r2 {1:0.00}  k {2:0.00}  visible {3}/{4}  {5}\n",
+                spiral.Parameters.R1,
+                spiral.Parameters.R2,
+                spiral.Parameters.K,
+                curvePlayback.VisibleSampleCount,
+                curvePlayback.TotalSampleCount,
+                curvePlayback.IsPlaying ? "PLAY" : "PAUSED");
+            AppendFormat("Dual circles at P{0}: XY radius {1:0.000}  ZW radius {2:0.000}\n",
+                sampleIndex,
+                xyRadius,
+                zwRadius);
+        }
         AppendFormat("Object4D pos ({0,6:0.00}, {1,6:0.00}, {2,6:0.00}, {3,6:0.00})  scale {4:0.000}\n",
             objectTransform.Position.X,
             objectTransform.Position.Y,
@@ -143,13 +177,26 @@ public sealed class DebugOverlayRenderer : IDisposable
             _text.AppendLine("Animation  idle");
         }
 
-        AppendFormat(
-            "Layers  Grid {0}  Axes {1}  Cells {2}  Edges {3}  Vertices {4}\n",
-            OnOff(displayOptions.ShowGrid),
-            OnOff(displayOptions.ShowAxes),
-            OnOff(displayOptions.ShowCells),
-            OnOff(displayOptions.ShowEdges),
-            OnOff(displayOptions.ShowVertices));
+        if (geometry.VisualStyle == GeometryVisualStyle4D.Spiral)
+        {
+            AppendFormat(
+                "Layers  Grid {0}  Axes {1}  Curve {2}  Points {3}  Direction {4}\n",
+                OnOff(displayOptions.ShowGrid),
+                OnOff(displayOptions.ShowAxes),
+                OnOff(displayOptions.ShowEdges),
+                OnOff(displayOptions.ShowVertices),
+                OnOff(displayOptions.ShowDirection));
+        }
+        else
+        {
+            AppendFormat(
+                "Layers  Grid {0}  Axes {1}  Surface {2}  Edges {3}  Vertices {4}\n",
+                OnOff(displayOptions.ShowGrid),
+                OnOff(displayOptions.ShowAxes),
+                OnOff(displayOptions.ShowCells),
+                OnOff(displayOptions.ShowEdges),
+                OnOff(displayOptions.ShowVertices));
+        }
     }
 
     private void AppendRotation(string label, Rotation4D rotation)

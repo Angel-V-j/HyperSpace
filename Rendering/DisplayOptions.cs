@@ -5,6 +5,18 @@ namespace HyperSpace.Rendering;
 /// </summary>
 public sealed class DisplayOptions
 {
+    public DisplayOptions(
+        bool showCells = true,
+        bool showEdges = true,
+        bool showVertices = true,
+        bool showDirection = false)
+    {
+        ShowCells = showCells;
+        ShowEdges = showEdges;
+        ShowVertices = showVertices;
+        ShowDirection = showDirection;
+    }
+
     public bool ShowGrid { get; private set; } = true;
 
     public bool ShowAxes { get; private set; } = true;
@@ -15,6 +27,8 @@ public sealed class DisplayOptions
 
     public bool ShowVertices { get; private set; } = true;
 
+    public bool ShowDirection { get; private set; }
+
     public void ToggleGrid() => ShowGrid = !ShowGrid;
 
     public void ToggleAxes() => ShowAxes = !ShowAxes;
@@ -24,4 +38,6 @@ public sealed class DisplayOptions
     public void ToggleEdges() => ShowEdges = !ShowEdges;
 
     public void ToggleVertices() => ShowVertices = !ShowVertices;
+
+    public void ToggleDirection() => ShowDirection = !ShowDirection;
 }

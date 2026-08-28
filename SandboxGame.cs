@@ -4,6 +4,7 @@ using HyperSpace.Input;
 using HyperSpace.Mathematics;
 using HyperSpace.Projection;
 using HyperSpace.Rendering;
+using HyperSpace.Scene;
 using HyperSpace.Transformations;
 using HyperSpace.UI;
 using Microsoft.Xna.Framework;
@@ -17,11 +18,15 @@ public sealed class SandboxGame : Game
     private const double PanelTranslationStep = 0.75;
     private const double PanelScaleUpFactor = 1.25;
     private const double PanelScaleDownFactor = 0.8;
+    private const double SpiralRadiusStep = 0.10;
+    private const double SpiralFrequencyStep = 0.25;
+    private const int SpiralSampleStep = 100;
 
     private readonly GraphicsDeviceManager _graphics;
-    private readonly Tesseract4D _tesseract = new();
+    private readonly Spiral4DGenerator _spiralGenerator = new();
+    private readonly SceneObject4D[] _objects;
+    private readonly CurvePlayback4D _curvePlayback;
     private readonly ReferenceGrid4D _referenceGrid = new();
-    private readonly Transform4D _tesseractTransform = new();
     private readonly Transform4D _referenceGridTransform = new();
     private readonly Camera4D _camera4D = new();
     private readonly PerspectiveProjector4D _projector4D = new();
@@ -29,32 +34,50 @@ public sealed class SandboxGame : Game
     private readonly OrbitCamera3D _camera3D = new();
     private readonly SandboxInputController _input = new();
     private readonly TransformationAnimator4D _transformAnimator = new();
-    private readonly DisplayOptions _displayOptions = new();
 
-    private Wireframe3D _tesseractWireframe3D;
+    private int _selectedObjectIndex;
+    private Wireframe3D _objectWireframe3D;
     private Wireframe3D _referenceGridWireframe3D;
     private WireframeRenderer3D? _wireframeRenderer;
     private DebugOverlayRenderer? _debugOverlay;
     private TransformationControlPanel? _controlPanel;
     private TransformationCommand? _activePanelCommand;
+    private SpiralParameters _pendingSpiralParameters = SpiralParameters.Default;
 
     public SandboxGame()
     {
+        var spiral = _spiralGenerator.Generate(_pendingSpiralParameters);
+        _objects =
+        [
+            new(new Tesseract4D()),
+            new(new Hypersphere4D()),
+            new(new Simplex4D()),
+            new(new IrregularPolytope4D()),
+            new(
+                spiral,
+                new DisplayOptions(
+                    showCells: false,
+                    showEdges: true,
+                    showVertices: false,
+                    showDirection: true))
+        ];
+        _curvePlayback = new CurvePlayback4D(spiral.Vertices.Count);
+
         _graphics = new GraphicsDeviceManager(this)
         {
             PreferredBackBufferWidth = 1280,
-            PreferredBackBufferHeight = 720,
+            PreferredBackBufferHeight = 900,
             SynchronizeWithVerticalRetrace = true
         };
 
         Content.RootDirectory = "Content";
         IsMouseVisible = true;
         Window.AllowUserResizing = true;
-        Window.Title = "HyperSpace - Interactive 4D Tesseract";
+        Window.Title = "HyperSpace - 4D Geometry Explorer";
 
-        _tesseractWireframe3D = _projectionPipeline.Project(
-            _tesseract,
-            _tesseractTransform,
+        _objectWireframe3D = _projectionPipeline.Project(
+            SelectedObject.Geometry,
+            SelectedObject.Transform,
             _camera4D,
             _projector4D);
         _referenceGridWireframe3D = _projectionPipeline.Project(
@@ -84,7 +107,8 @@ public sealed class SandboxGame : Game
             IsActive,
             viewport.Width,
             viewport.Height,
-            _transformAnimator.IsActive);
+            _transformAnimator.IsActive,
+            SelectedObject.Geometry);
         var pointerOverPanel = _controlPanel?.Contains(mouse.Position) ?? false;
 
         _input.Update(
@@ -93,7 +117,7 @@ public sealed class SandboxGame : Game
             keyboard,
             mouse,
             gamePad,
-            _tesseractTransform,
+            SelectedObject.Transform,
             _camera4D,
             _projector4D,
             _camera3D,
@@ -117,18 +141,26 @@ public sealed class SandboxGame : Game
 
         _transformAnimator.Update(
             gameTime.ElapsedGameTime.TotalSeconds,
-            _tesseractTransform);
+            SelectedObject.Transform);
+        if (IsSpiralSelected)
+        {
+            _curvePlayback.Update(gameTime.ElapsedGameTime.TotalSeconds);
+        }
 
         if (!_transformAnimator.IsActive)
         {
             _activePanelCommand = null;
         }
 
-        _controlPanel?.SetActiveState(_activePanelCommand, _displayOptions);
+        _controlPanel?.SetActiveState(
+            _activePanelCommand,
+            SelectedObject.DisplayOptions,
+            SelectedObject.Geometry.VisualStyle,
+            _curvePlayback);
 
-        _tesseractWireframe3D = _projectionPipeline.Project(
-            _tesseract,
-            _tesseractTransform,
+        _objectWireframe3D = _projectionPipeline.Project(
+            SelectedObject.Geometry,
+            SelectedObject.Transform,
             _camera4D,
             _projector4D);
         _referenceGridWireframe3D = _projectionPipeline.Project(
@@ -156,52 +188,75 @@ public sealed class SandboxGame : Game
             Math.Max(1, fullViewport.Width - panelWidth),
             fullViewport.Height);
         GraphicsDevice.Viewport = sceneViewport;
+        var visibleVertexLimit = IsSpiralSelected
+            ? _curvePlayback.VisibleSampleCount
+            : int.MaxValue;
 
         _wireframeRenderer?.DrawReferenceGrid(
             GraphicsDevice,
             _referenceGridWireframe3D,
             _camera3D,
-            _displayOptions.ShowGrid,
-            _displayOptions.ShowAxes);
+            SelectedObject.DisplayOptions.ShowGrid,
+            SelectedObject.DisplayOptions.ShowAxes);
 
-        if (_displayOptions.ShowCells)
+        if (SelectedObject.DisplayOptions.ShowCells)
         {
-            _wireframeRenderer?.DrawCells(
+            _wireframeRenderer?.DrawSurfaces(
                 GraphicsDevice,
-                _tesseractWireframe3D,
-                _tesseract.Cells,
+                _objectWireframe3D,
+                SelectedObject.Geometry,
                 _camera3D);
         }
 
-        if (_displayOptions.ShowEdges)
+        if (SelectedObject.DisplayOptions.ShowEdges)
         {
-            _wireframeRenderer?.Draw(GraphicsDevice, _tesseractWireframe3D, _camera3D);
+            _wireframeRenderer?.Draw(
+                GraphicsDevice,
+                _objectWireframe3D,
+                SelectedObject.Geometry,
+                _camera3D,
+                visibleVertexLimit);
         }
 
-        if (_displayOptions.ShowVertices)
+        if (SelectedObject.DisplayOptions.ShowVertices)
         {
             _wireframeRenderer?.DrawVertices(
                 GraphicsDevice,
-                _tesseractWireframe3D,
-                _camera3D);
+                _objectWireframe3D,
+                SelectedObject.Geometry,
+                _camera3D,
+                visibleVertexLimit);
+        }
+
+        if (IsSpiralSelected && SelectedObject.DisplayOptions.ShowDirection)
+        {
+            _wireframeRenderer?.DrawCurveDirectionMarkers(
+                GraphicsDevice,
+                _objectWireframe3D,
+                _camera3D,
+                visibleVertexLimit);
         }
 
         _debugOverlay?.Draw(
-            _tesseractTransform,
+            SelectedObject.Geometry,
+            SelectedObject.Transform,
             _camera4D,
             _projector4D,
             _camera3D,
-            _tesseractWireframe3D,
+            _objectWireframe3D,
             _transformAnimator,
-            _displayOptions);
+            SelectedObject.DisplayOptions,
+            _curvePlayback);
 
         GraphicsDevice.Viewport = fullViewport;
         _controlPanel?.Draw(
             fullViewport.Width,
             fullViewport.Height,
             _transformAnimator,
-            _displayOptions,
-            _tesseract.Cells);
+            SelectedObject.DisplayOptions,
+            SelectedObject.Geometry,
+            _pendingSpiralParameters,
+            _curvePlayback);
 
         base.Draw(gameTime);
     }
@@ -216,6 +271,16 @@ public sealed class SandboxGame : Game
 
     private void HandlePanelCommand(TransformationCommand command)
     {
+        if (TrySelectObject(command))
+        {
+            return;
+        }
+
+        if (TryHandleSpiralCommand(command))
+        {
+            return;
+        }
+
         if (TryHandleDisplayCommand(command))
         {
             return;
@@ -224,7 +289,7 @@ public sealed class SandboxGame : Game
         if (command == TransformationCommand.ResetObject)
         {
             _transformAnimator.Cancel();
-            _tesseractTransform.Reset();
+            SelectedObject.Transform.Reset();
             _activePanelCommand = null;
             return;
         }
@@ -284,22 +349,137 @@ public sealed class SandboxGame : Game
 
     private bool TryHandleDisplayCommand(TransformationCommand command)
     {
+        var displayOptions = SelectedObject.DisplayOptions;
         switch (command)
         {
             case TransformationCommand.ToggleGrid:
-                _displayOptions.ToggleGrid();
+                displayOptions.ToggleGrid();
                 return true;
             case TransformationCommand.ToggleAxes:
-                _displayOptions.ToggleAxes();
+                displayOptions.ToggleAxes();
                 return true;
             case TransformationCommand.ToggleCells:
-                _displayOptions.ToggleCells();
+                displayOptions.ToggleCells();
                 return true;
             case TransformationCommand.ToggleEdges:
-                _displayOptions.ToggleEdges();
+                displayOptions.ToggleEdges();
                 return true;
             case TransformationCommand.ToggleVertices:
-                _displayOptions.ToggleVertices();
+                displayOptions.ToggleVertices();
+                return true;
+            case TransformationCommand.ToggleCurve:
+                displayOptions.ToggleEdges();
+                return true;
+            case TransformationCommand.ToggleCurvePoints:
+                displayOptions.ToggleVertices();
+                return true;
+            case TransformationCommand.ToggleCurveDirection:
+                displayOptions.ToggleDirection();
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    private SceneObject4D SelectedObject => _objects[_selectedObjectIndex];
+
+    private SceneObject4D SpiralObject => _objects[4];
+
+    private bool IsSpiralSelected =>
+        SelectedObject.Geometry.VisualStyle == GeometryVisualStyle4D.Spiral;
+
+    private bool TrySelectObject(TransformationCommand command)
+    {
+        var selectedIndex = command switch
+        {
+            TransformationCommand.SelectTesseract => 0,
+            TransformationCommand.SelectHypersphere => 1,
+            TransformationCommand.SelectSimplex => 2,
+            TransformationCommand.SelectIrregular => 3,
+            TransformationCommand.SelectSpiral => 4,
+            _ => -1
+        };
+
+        if (selectedIndex < 0)
+        {
+            return false;
+        }
+
+        _transformAnimator.Cancel();
+        _activePanelCommand = null;
+        _selectedObjectIndex = selectedIndex;
+        Window.Title = $"HyperSpace - {SelectedObject.Geometry.Name}";
+        return true;
+    }
+
+    private bool TryHandleSpiralCommand(TransformationCommand command)
+    {
+        switch (command)
+        {
+            case TransformationCommand.DecreaseSpiralR1:
+                _pendingSpiralParameters = _pendingSpiralParameters with
+                {
+                    R1 = Math.Clamp(_pendingSpiralParameters.R1 - SpiralRadiusStep, 0.10, 3.0)
+                };
+                return true;
+            case TransformationCommand.IncreaseSpiralR1:
+                _pendingSpiralParameters = _pendingSpiralParameters with
+                {
+                    R1 = Math.Clamp(_pendingSpiralParameters.R1 + SpiralRadiusStep, 0.10, 3.0)
+                };
+                return true;
+            case TransformationCommand.DecreaseSpiralR2:
+                _pendingSpiralParameters = _pendingSpiralParameters with
+                {
+                    R2 = Math.Clamp(_pendingSpiralParameters.R2 - SpiralRadiusStep, 0.10, 3.0)
+                };
+                return true;
+            case TransformationCommand.IncreaseSpiralR2:
+                _pendingSpiralParameters = _pendingSpiralParameters with
+                {
+                    R2 = Math.Clamp(_pendingSpiralParameters.R2 + SpiralRadiusStep, 0.10, 3.0)
+                };
+                return true;
+            case TransformationCommand.DecreaseSpiralK:
+                _pendingSpiralParameters = _pendingSpiralParameters with
+                {
+                    K = Math.Clamp(_pendingSpiralParameters.K - SpiralFrequencyStep, 0.25, 32.0)
+                };
+                return true;
+            case TransformationCommand.IncreaseSpiralK:
+                _pendingSpiralParameters = _pendingSpiralParameters with
+                {
+                    K = Math.Clamp(_pendingSpiralParameters.K + SpiralFrequencyStep, 0.25, 32.0)
+                };
+                return true;
+            case TransformationCommand.DecreaseSpiralSamples:
+                _pendingSpiralParameters = _pendingSpiralParameters with
+                {
+                    SampleCount = Math.Clamp(
+                        _pendingSpiralParameters.SampleCount - SpiralSampleStep,
+                        100,
+                        1200)
+                };
+                return true;
+            case TransformationCommand.IncreaseSpiralSamples:
+                _pendingSpiralParameters = _pendingSpiralParameters with
+                {
+                    SampleCount = Math.Clamp(
+                        _pendingSpiralParameters.SampleCount + SpiralSampleStep,
+                        100,
+                        1200)
+                };
+                return true;
+            case TransformationCommand.RegenerateSpiral:
+                var spiral = _spiralGenerator.Generate(_pendingSpiralParameters);
+                SpiralObject.ReplaceGeometry(spiral);
+                _curvePlayback.SetTotalSampleCount(spiral.Vertices.Count, showComplete: true);
+                return true;
+            case TransformationCommand.PlayCurve:
+                _curvePlayback.Play();
+                return true;
+            case TransformationCommand.ResetCurve:
+                _curvePlayback.Reset();
                 return true;
             default:
                 return false;

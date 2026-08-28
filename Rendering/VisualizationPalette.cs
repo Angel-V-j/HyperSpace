@@ -30,6 +30,17 @@ public static class VisualizationPalette
     public static readonly Color VertexNegativeW = new(105, 215, 255);
     public static readonly Color VertexPositiveW = new(255, 197, 92);
 
+    public static readonly Color HypersphereNegativeW = new(60, 201, 222);
+    public static readonly Color HyperspherePositiveW = new(216, 102, 235);
+    public static readonly Color SimplexNegativeW = new(255, 161, 78);
+    public static readonly Color SimplexPositiveW = new(255, 224, 112);
+    public static readonly Color IrregularNegativeW = new(79, 206, 146);
+    public static readonly Color IrregularPositiveW = new(245, 103, 122);
+    public static readonly Color SpiralNegativeW = new(50, 211, 255);
+    public static readonly Color SpiralPositiveW = new(255, 88, 190);
+    public static readonly Color CurveStart = new(91, 232, 139);
+    public static readonly Color CurveEnd = new(255, 207, 82);
+
     public static readonly Color Grid = new(115, 125, 155, 40);
     public static readonly Color AxisX = new(190, 90, 95, 82);
     public static readonly Color AxisY = new(90, 175, 110, 82);
@@ -41,10 +52,16 @@ public static class VisualizationPalette
     public static readonly Color SystemAccent = new(214, 154, 94);
     public static readonly Color DisplayAccent = new(174, 128, 224);
     public static readonly Color ObjectInfoAccent = new(90, 145, 210);
+    public static readonly Color CurveAccent = new(58, 205, 210);
 
     public static int CellColorCount => Cells.Length;
 
     public static Color CellColor(int index) => Cells[index];
+
+    public static Color CellColor(int index, GeometryVisualStyle4D style) =>
+        style == GeometryVisualStyle4D.Simplex
+            ? Cells[(index + 1) % Cells.Length]
+            : Cells[index % Cells.Length];
 
     public static Color EdgeColor(CoordinateAxis4D? axis) =>
         axis switch
@@ -55,4 +72,22 @@ public static class VisualizationPalette
             CoordinateAxis4D.W => EdgeW,
             _ => Color.White
         };
+
+    public static Color WDepthColor(GeometryVisualStyle4D style, float amount)
+    {
+        var (negative, positive) = style switch
+        {
+            GeometryVisualStyle4D.Hypersphere =>
+                (HypersphereNegativeW, HyperspherePositiveW),
+            GeometryVisualStyle4D.Simplex =>
+                (SimplexNegativeW, SimplexPositiveW),
+            GeometryVisualStyle4D.Irregular =>
+                (IrregularNegativeW, IrregularPositiveW),
+            GeometryVisualStyle4D.Spiral =>
+                (SpiralNegativeW, SpiralPositiveW),
+            _ => (VertexNegativeW, VertexPositiveW)
+        };
+
+        return Color.Lerp(negative, positive, amount);
+    }
 }
