@@ -15,7 +15,7 @@ public sealed class UiButton
         Command = command;
     }
 
-    public string Label { get; }
+    public string Label { get; private set; }
 
     public TransformationCommand Command { get; }
 
@@ -37,6 +37,11 @@ public sealed class UiButton
     public void SetActive(bool isActive)
     {
         IsActive = isActive;
+    }
+
+    public void SetLabel(string label)
+    {
+        Label = label;
     }
 
     public bool Update(MouseState mouse, MouseState previousMouse, bool isEnabled)

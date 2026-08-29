@@ -36,12 +36,30 @@ The result `(x', y', z')` is stored in `Wireframe3D`; it is not drawn directly a
 2D coordinates. The renderer later converts it to MonoGame `Vector3`, reuses the
 same projected indices for cell faces, and uses a normal 3D camera plus
 MonoGame's 3D perspective projection to reach the screen. Tesseract, sampled
-hypersphere, simplex, irregular polytope, and the sampled 4D spiral all use this exact path through the
-common `IGeometry4D` overload; object selection is not a special projection mode.
+hypersphere, simplex, irregular polytope, sampled 4D spiral, and every point of
+the quaternion Julia dataset all use this exact path through the common
+`IGeometry4D` overload; object selection is not a special projection mode.
+
+Physics point positions deliberately do not implement `IGeometry4D`: they are
+dynamic state rather than source topology. The pipeline's lower-level overload
+accepts their current `Vector4D` list directly and produces the same
+`ProjectedVertex3D`/`Wireframe3D` intermediate representation. The finite W=0
+hyperplane lattice uses that overload as well, with source vertices whose W is
+mathematically zero. Physics never sees projected coordinates, and the renderer
+never advances physics.
+
+Gravity Lab uses this same lower-level overload for two additional dynamic
+representations. The field reference is a two-point 4D segment from central mass
+to orbiter. The trajectory is a bounded list of original `Vector4D` positions
+joined by sequential edges. Neither stores projected coordinates. Camera4D
+movement or any of its six plane rotations rebuilds both `Wireframe3D` results
+from the unchanged 4D sources; trail coloring reads each projected vertex's
+retained world W metadata.
 
 For visualization metadata only, each projected vertex also retains its local
-source W and transformed world W. The spiral renderer uses world W for its
-gradient. Neither value participates in, or modifies, the perspective formula.
+source W and transformed world W. The spiral and fractal renderers use world W
+for their optional gradients. Neither value participates in, or modifies, the
+perspective formula.
 
 Increasing `d` magnifies the projected 3D representation. Moving or rotating
 Camera4D changes camera-space W and therefore changes the actual 4D perspective.
@@ -63,8 +81,12 @@ any rejected vertex are also skipped as a whole, so no triangle can cross the
 perspective singularity. Proper intersection and clipping can be added later
 without changing any source geometry or the 3D renderer.
 
-## Slicing
+## Fractal debug slice
 
-W slicing is intentionally absent. If introduced later, it should be a separate
-visualization mode that produces its own 3D representation alongside, rather
-than inside, `WireframeProjectionPipeline4D`.
+The quaternion Julia view has one optional local-W sample filter. It accepts
+samples within half a grid interval of the chosen W and is applied only when the
+point-cloud renderer selects which already projected vertices to draw. It does
+not alter `PerspectiveProjector4D`, Camera4D, or the stored 4D dataset. With the
+filter off (the default), the entire sampled 4D fractal is projected. A future
+general slicing mode should remain a separate visualization strategy rather
+than replace this perspective pipeline.

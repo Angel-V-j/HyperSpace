@@ -1,7 +1,10 @@
 using System;
+using HyperSpace.Application;
+using HyperSpace.Diagnostics;
 using HyperSpace.Geometry;
 using HyperSpace.Input;
 using HyperSpace.Mathematics;
+using HyperSpace.Physics;
 using HyperSpace.Projection;
 using HyperSpace.Rendering;
 using HyperSpace.Scene;
@@ -21,9 +24,16 @@ public sealed class SandboxGame : Game
     private const double SpiralRadiusStep = 0.10;
     private const double SpiralFrequencyStep = 0.25;
     private const int SpiralSampleStep = 100;
-
+    private const double JuliaConstantStep = 0.05;
+    private const int JuliaIterationStep = 4;
+    private const double JuliaEscapeRadiusStep = 0.25;
+    private const int JuliaResolutionStep = 2;
+    private const double FractalSliceStep = 0.25;
+    private const int FractalSamplesPerUpdate = 512;
     private readonly GraphicsDeviceManager _graphics;
     private readonly Spiral4DGenerator _spiralGenerator = new();
+    private readonly QuaternionJuliaGenerator4D _fractalGenerator = new();
+    private readonly FractalVisualizationSettings _fractalVisualization = new();
     private readonly SceneObject4D[] _objects;
     private readonly CurvePlayback4D _curvePlayback;
     private readonly ReferenceGrid4D _referenceGrid = new();
@@ -33,7 +43,13 @@ public sealed class SandboxGame : Game
     private readonly WireframeProjectionPipeline4D _projectionPipeline = new();
     private readonly OrbitCamera3D _camera3D = new();
     private readonly SandboxInputController _input = new();
+    private readonly NBodySelectionController _nBodySelection = new();
     private readonly TransformationAnimator4D _transformAnimator = new();
+    private readonly PhysicsWorld4D _physicsWorld = new();
+    private readonly GravityLab4D _gravityLab;
+    private readonly NBodyLab4D _nBodyLab;
+    private readonly PhysicsCommandController _physicsCommands;
+    private readonly PhysicsProjectionCache4D _physicsProjection;
 
     private int _selectedObjectIndex;
     private Wireframe3D _objectWireframe3D;
@@ -43,9 +59,18 @@ public sealed class SandboxGame : Game
     private TransformationControlPanel? _controlPanel;
     private TransformationCommand? _activePanelCommand;
     private SpiralParameters _pendingSpiralParameters = SpiralParameters.Default;
+    private JuliaParameters _pendingJuliaParameters = JuliaParameters.Default;
+    private QuaternionJuliaGeneration4D? _fractalGeneration;
 
     public SandboxGame()
     {
+        _gravityLab = new GravityLab4D(_physicsWorld);
+        _nBodyLab = new NBodyLab4D(_physicsWorld);
+        _physicsCommands = new PhysicsCommandController(_physicsWorld, _gravityLab, _nBodyLab);
+        _physicsProjection = new PhysicsProjectionCache4D(
+            _projectionPipeline,
+            _camera4D,
+            _projector4D);
         var spiral = _spiralGenerator.Generate(_pendingSpiralParameters);
         _objects =
         [
@@ -59,7 +84,13 @@ public sealed class SandboxGame : Game
                     showCells: false,
                     showEdges: true,
                     showVertices: false,
-                    showDirection: true))
+                    showDirection: true)),
+            new(
+                QuaternionJuliaSet4D.Empty(_pendingJuliaParameters),
+                new DisplayOptions(
+                    showCells: false,
+                    showEdges: false,
+                    showVertices: true))
         ];
         _curvePlayback = new CurvePlayback4D(spiral.Vertices.Count);
 
@@ -71,6 +102,8 @@ public sealed class SandboxGame : Game
         };
 
         Content.RootDirectory = "Content";
+        IsFixedTimeStep = true;
+        TargetElapsedTime = TimeSpan.FromSeconds(PhysicsWorld4D.DefaultFixedDeltaTime);
         IsMouseVisible = true;
         Window.AllowUserResizing = true;
         Window.Title = "HyperSpace - 4D Geometry Explorer";
@@ -98,18 +131,41 @@ public sealed class SandboxGame : Game
 
     protected override void Update(GameTime gameTime)
     {
+        var performance = _physicsWorld.Performance;
+        performance.BeginFrame(
+            gameTime.ElapsedGameTime.TotalSeconds,
+            _physicsWorld.FixedDeltaTime,
+            _physicsWorld.TimeScale);
+        var updateStartedAt = performance.BeginPhase();
         var keyboard = Keyboard.GetState();
         var mouse = Mouse.GetState();
         var gamePad = GamePad.GetState(PlayerIndex.One);
         var viewport = GraphicsDevice.Viewport;
+        var uiUpdateStartedAt = performance.BeginPhase();
         var panelCommand = _controlPanel?.Update(
             mouse,
+            keyboard,
             IsActive,
             viewport.Width,
             viewport.Height,
             _transformAnimator.IsActive,
-            SelectedObject.Geometry);
+            SelectedObject.Geometry,
+            IsFractalGenerationActive,
+            _physicsWorld,
+            _nBodyLab);
+        performance.EndPhase(PerformancePhase.UiUpdate, uiUpdateStartedAt);
         var pointerOverPanel = _controlPanel?.Contains(mouse.Position) ?? false;
+
+        if (_controlPanel?.IsGravityLabView == true && !_gravityLab.HasExperiment)
+        {
+            _gravityLab.ResetExperiment();
+        }
+
+
+        if (_controlPanel?.IsNBodyLabView == true && !_nBodyLab.HasSystem)
+        {
+            _nBodyLab.GenerateSystem();
+        }
 
         _input.Update(
             gameTime,
@@ -146,6 +202,8 @@ public sealed class SandboxGame : Game
         {
             _curvePlayback.Update(gameTime.ElapsedGameTime.TotalSeconds);
         }
+        AdvanceFractalGeneration();
+        _physicsWorld.Update(gameTime.ElapsedGameTime.TotalSeconds);
 
         if (!_transformAnimator.IsActive)
         {
@@ -156,8 +214,19 @@ public sealed class SandboxGame : Game
             _activePanelCommand,
             SelectedObject.DisplayOptions,
             SelectedObject.Geometry.VisualStyle,
-            _curvePlayback);
+            _curvePlayback,
+            _fractalVisualization,
+            IsFractalGenerationActive,
+            _physicsWorld,
+            _nBodyLab,
+            _physicsCommands.ShowPhysicsPlane,
+            _physicsCommands.ShowGravityTrail,
+            _physicsCommands.ShowGravityField);
 
+        var isNBodyView = _controlPanel?.IsNBodyLabView == true;
+        var renderPreparationStartedAt = isNBodyView
+            ? performance.BeginPhase()
+            : 0L;
         _objectWireframe3D = _projectionPipeline.Project(
             SelectedObject.Geometry,
             SelectedObject.Transform,
@@ -169,28 +238,46 @@ public sealed class SandboxGame : Game
             _referenceGridTransform,
             _camera4D,
             _projector4D);
+        _physicsProjection.Update(_physicsWorld, _gravityLab, _nBodyLab);
+        var selectedBody = _nBodySelection.Update(
+            mouse,
+            IsActive,
+            isNBodyView,
+            pointerOverPanel,
+            CreateSceneViewport(GraphicsDevice.Viewport),
+            _physicsProjection.Particles,
+            _physicsWorld.Bodies,
+            _camera3D,
+            _nBodyLab.Settings.PointScale);
+        if (selectedBody is not null)
+        {
+            _nBodyLab.SelectBody(selectedBody);
+        }
+        if (isNBodyView)
+        {
+            performance.EndPhase(
+                PerformancePhase.RenderingPreparation,
+                renderPreparationStartedAt);
+        }
 
         _debugOverlay?.UpdateTiming(gameTime);
         base.Update(gameTime);
+        performance.EndPhase(PerformancePhase.UpdateTotal, updateStartedAt);
     }
 
     protected override void Draw(GameTime gameTime)
     {
+        var performance = _physicsWorld.Performance;
+        var renderStartedAt = performance.BeginPhase();
         GraphicsDevice.Clear(new Color(8, 11, 22));
 
         var fullViewport = GraphicsDevice.Viewport;
-        var panelWidth = Math.Min(
-            TransformationControlPanel.PreferredWidth,
-            fullViewport.Width);
-        var sceneViewport = new Viewport(
-            0,
-            0,
-            Math.Max(1, fullViewport.Width - panelWidth),
-            fullViewport.Height);
+        var sceneViewport = CreateSceneViewport(fullViewport);
         GraphicsDevice.Viewport = sceneViewport;
         var visibleVertexLimit = IsSpiralSelected
             ? _curvePlayback.VisibleSampleCount
             : int.MaxValue;
+        var isNBodyView = _controlPanel?.IsNBodyLabView == true;
 
         _wireframeRenderer?.DrawReferenceGrid(
             GraphicsDevice,
@@ -199,7 +286,15 @@ public sealed class SandboxGame : Game
             SelectedObject.DisplayOptions.ShowGrid,
             SelectedObject.DisplayOptions.ShowAxes);
 
-        if (SelectedObject.DisplayOptions.ShowCells)
+        if (_physicsCommands.ShowPhysicsPlane)
+        {
+            _wireframeRenderer?.DrawPhysicsHyperplane(
+                GraphicsDevice,
+                _physicsProjection.Hyperplane,
+                _camera3D);
+        }
+
+        if (!isNBodyView && SelectedObject.DisplayOptions.ShowCells)
         {
             _wireframeRenderer?.DrawSurfaces(
                 GraphicsDevice,
@@ -208,7 +303,7 @@ public sealed class SandboxGame : Game
                 _camera3D);
         }
 
-        if (SelectedObject.DisplayOptions.ShowEdges)
+        if (!isNBodyView && SelectedObject.DisplayOptions.ShowEdges)
         {
             _wireframeRenderer?.Draw(
                 GraphicsDevice,
@@ -218,7 +313,18 @@ public sealed class SandboxGame : Game
                 visibleVertexLimit);
         }
 
-        if (SelectedObject.DisplayOptions.ShowVertices)
+        if (!isNBodyView && IsFractalSelected &&
+            SelectedObject.DisplayOptions.ShowVertices &&
+            SelectedObject.Geometry is QuaternionJuliaSet4D fractal)
+        {
+            _wireframeRenderer?.DrawFractalPoints(
+                GraphicsDevice,
+                _objectWireframe3D,
+                fractal,
+                _camera3D,
+                _fractalVisualization);
+        }
+        else if (!isNBodyView && SelectedObject.DisplayOptions.ShowVertices)
         {
             _wireframeRenderer?.DrawVertices(
                 GraphicsDevice,
@@ -228,13 +334,59 @@ public sealed class SandboxGame : Game
                 visibleVertexLimit);
         }
 
-        if (IsSpiralSelected && SelectedObject.DisplayOptions.ShowDirection)
+        if (!isNBodyView && IsSpiralSelected && SelectedObject.DisplayOptions.ShowDirection)
         {
             _wireframeRenderer?.DrawCurveDirectionMarkers(
                 GraphicsDevice,
                 _objectWireframe3D,
                 _camera3D,
                 visibleVertexLimit);
+        }
+
+        if (_controlPanel?.IsGravityLabView == true && _physicsCommands.ShowGravityTrail)
+        {
+            _wireframeRenderer?.DrawGravityTrail(
+                GraphicsDevice,
+                _physicsProjection.GravityTrail,
+                _camera3D);
+        }
+
+        var nBodyRenderStartedAt = isNBodyView
+            ? performance.BeginPhase()
+            : 0L;
+        if (_controlPanel?.IsNBodyLabView == true &&
+            _nBodyLab.TrailMode == NBodyTrailMode4D.SelectedBody)
+        {
+            _wireframeRenderer?.DrawGravityTrail(
+                GraphicsDevice,
+                _physicsProjection.NBodyTrail,
+                _camera3D);
+        }
+
+        if (_controlPanel?.IsGravityLabView == true && _physicsCommands.ShowGravityField)
+        {
+            _wireframeRenderer?.DrawGravityFieldLink(
+                GraphicsDevice,
+                _physicsProjection.GravityField,
+                _camera3D);
+        }
+
+        _wireframeRenderer?.DrawPhysicsParticles(
+            GraphicsDevice,
+            _physicsProjection.Particles,
+            _physicsWorld.Bodies,
+            _physicsWorld.SelectedBody,
+            _gravityLab.CentralBody,
+            _gravityLab.Orbiter,
+            _camera3D,
+            nBodyMode: _controlPanel?.IsNBodyLabView == true,
+            nBodyColorMode: _nBodyLab.ColorMode,
+            pointScale: _nBodyLab.Settings.PointScale);
+        if (isNBodyView)
+        {
+            performance.EndPhase(
+                PerformancePhase.NBodyRenderCpu,
+                nBodyRenderStartedAt);
         }
 
         _debugOverlay?.Draw(
@@ -246,7 +398,16 @@ public sealed class SandboxGame : Game
             _objectWireframe3D,
             _transformAnimator,
             SelectedObject.DisplayOptions,
-            _curvePlayback);
+            _curvePlayback,
+            _fractalVisualization,
+            _fractalGeneration,
+            _physicsWorld,
+            _gravityLab,
+            _nBodyLab,
+            _physicsCommands.ShowPhysicsPlane,
+            _physicsCommands.ShowGravityTrail,
+            _physicsCommands.ShowGravityField,
+            showNBodyPerformance: isNBodyView);
 
         GraphicsDevice.Viewport = fullViewport;
         _controlPanel?.Draw(
@@ -256,13 +417,29 @@ public sealed class SandboxGame : Game
             SelectedObject.DisplayOptions,
             SelectedObject.Geometry,
             _pendingSpiralParameters,
-            _curvePlayback);
+            _curvePlayback,
+            _pendingJuliaParameters,
+            _fractalVisualization,
+            _fractalGeneration,
+            _physicsWorld,
+            _gravityLab,
+            _nBodyLab,
+            _physicsCommands.PendingParticleVelocity,
+            _physicsCommands.ShowPhysicsPlane,
+            _physicsCommands.ShowGravityTrail,
+            _physicsCommands.ShowGravityField);
 
         base.Draw(gameTime);
+        performance.EndPhase(PerformancePhase.RenderTotal, renderStartedAt);
+        performance.CompleteFrame(
+            _physicsWorld.AccumulatedSimulationTime,
+            _physicsWorld.SimulationStepsPerSecond);
     }
 
     protected override void UnloadContent()
     {
+        _nBodyLab.Dispose();
+        _gravityLab.Dispose();
         _controlPanel?.Dispose();
         _debugOverlay?.Dispose();
         _wireframeRenderer?.Dispose();
@@ -277,6 +454,18 @@ public sealed class SandboxGame : Game
         }
 
         if (TryHandleSpiralCommand(command))
+        {
+            return;
+        }
+
+        if (TryHandleFractalCommand(command))
+        {
+            return;
+        }
+
+        if (_physicsCommands.TryHandle(
+            command,
+            _controlPanel?.IsNBodyLabView == true))
         {
             return;
         }
@@ -385,8 +574,16 @@ public sealed class SandboxGame : Game
 
     private SceneObject4D SpiralObject => _objects[4];
 
+    private SceneObject4D FractalObject => _objects[5];
+
     private bool IsSpiralSelected =>
         SelectedObject.Geometry.VisualStyle == GeometryVisualStyle4D.Spiral;
+
+    private bool IsFractalSelected =>
+        SelectedObject.Geometry.VisualStyle == GeometryVisualStyle4D.Fractal;
+
+    private bool IsFractalGenerationActive =>
+        _fractalGeneration is { IsCompleted: false, IsCancelled: false };
 
     private bool TrySelectObject(TransformationCommand command)
     {
@@ -397,6 +594,7 @@ public sealed class SandboxGame : Game
             TransformationCommand.SelectSimplex => 2,
             TransformationCommand.SelectIrregular => 3,
             TransformationCommand.SelectSpiral => 4,
+            TransformationCommand.SelectFractal => 5,
             _ => -1
         };
 
@@ -408,6 +606,12 @@ public sealed class SandboxGame : Game
         _transformAnimator.Cancel();
         _activePanelCommand = null;
         _selectedObjectIndex = selectedIndex;
+        if (IsFractalSelected &&
+            FractalObject.Geometry.Vertices.Count == 0 &&
+            !IsFractalGenerationActive)
+        {
+            StartFractalGeneration();
+        }
         Window.Title = $"HyperSpace - {SelectedObject.Geometry.Name}";
         return true;
     }
@@ -484,5 +688,176 @@ public sealed class SandboxGame : Game
             default:
                 return false;
         }
+    }
+
+    private bool TryHandleFractalCommand(TransformationCommand command)
+    {
+        var constant = _pendingJuliaParameters.Constant;
+        switch (command)
+        {
+            case TransformationCommand.DecreaseJuliaA:
+                SetJuliaConstant(constant with { A = ClampJuliaConstant(constant.A - JuliaConstantStep) });
+                return true;
+            case TransformationCommand.IncreaseJuliaA:
+                SetJuliaConstant(constant with { A = ClampJuliaConstant(constant.A + JuliaConstantStep) });
+                return true;
+            case TransformationCommand.DecreaseJuliaB:
+                SetJuliaConstant(constant with { B = ClampJuliaConstant(constant.B - JuliaConstantStep) });
+                return true;
+            case TransformationCommand.IncreaseJuliaB:
+                SetJuliaConstant(constant with { B = ClampJuliaConstant(constant.B + JuliaConstantStep) });
+                return true;
+            case TransformationCommand.DecreaseJuliaC:
+                SetJuliaConstant(constant with { C = ClampJuliaConstant(constant.C - JuliaConstantStep) });
+                return true;
+            case TransformationCommand.IncreaseJuliaC:
+                SetJuliaConstant(constant with { C = ClampJuliaConstant(constant.C + JuliaConstantStep) });
+                return true;
+            case TransformationCommand.DecreaseJuliaD:
+                SetJuliaConstant(constant with { D = ClampJuliaConstant(constant.D - JuliaConstantStep) });
+                return true;
+            case TransformationCommand.IncreaseJuliaD:
+                SetJuliaConstant(constant with { D = ClampJuliaConstant(constant.D + JuliaConstantStep) });
+                return true;
+            case TransformationCommand.DecreaseJuliaIterations:
+                _pendingJuliaParameters = _pendingJuliaParameters with
+                {
+                    MaxIterations = Math.Clamp(
+                        _pendingJuliaParameters.MaxIterations - JuliaIterationStep,
+                        4,
+                        128)
+                };
+                return true;
+            case TransformationCommand.IncreaseJuliaIterations:
+                _pendingJuliaParameters = _pendingJuliaParameters with
+                {
+                    MaxIterations = Math.Clamp(
+                        _pendingJuliaParameters.MaxIterations + JuliaIterationStep,
+                        4,
+                        128)
+                };
+                return true;
+            case TransformationCommand.DecreaseJuliaEscapeRadius:
+                _pendingJuliaParameters = _pendingJuliaParameters with
+                {
+                    EscapeRadius = Math.Clamp(
+                        _pendingJuliaParameters.EscapeRadius - JuliaEscapeRadiusStep,
+                        1.0,
+                        8.0)
+                };
+                return true;
+            case TransformationCommand.IncreaseJuliaEscapeRadius:
+                _pendingJuliaParameters = _pendingJuliaParameters with
+                {
+                    EscapeRadius = Math.Clamp(
+                        _pendingJuliaParameters.EscapeRadius + JuliaEscapeRadiusStep,
+                        1.0,
+                        8.0)
+                };
+                return true;
+            case TransformationCommand.DecreaseJuliaResolution:
+                _pendingJuliaParameters = _pendingJuliaParameters with
+                {
+                    Resolution = Math.Clamp(
+                        _pendingJuliaParameters.Resolution - JuliaResolutionStep,
+                        6,
+                        20)
+                };
+                return true;
+            case TransformationCommand.IncreaseJuliaResolution:
+                _pendingJuliaParameters = _pendingJuliaParameters with
+                {
+                    Resolution = Math.Clamp(
+                        _pendingJuliaParameters.Resolution + JuliaResolutionStep,
+                        6,
+                        20)
+                };
+                return true;
+            case TransformationCommand.SelectJuliaPreset1:
+                SetJuliaConstant(JuliaParameters.Preset1);
+                return true;
+            case TransformationCommand.SelectJuliaPreset2:
+                SetJuliaConstant(JuliaParameters.Preset2);
+                return true;
+            case TransformationCommand.SelectJuliaPreset3:
+                SetJuliaConstant(JuliaParameters.Preset3);
+                return true;
+            case TransformationCommand.GenerateFractal:
+                StartFractalGeneration();
+                return true;
+            case TransformationCommand.CancelFractalGeneration:
+                _fractalGeneration?.Cancel();
+                _fractalGeneration = null;
+                return true;
+            case TransformationCommand.ResetFractal:
+                _pendingJuliaParameters = JuliaParameters.Default;
+                _fractalVisualization.Reset();
+                StartFractalGeneration();
+                return true;
+            case TransformationCommand.ColorFractalByW:
+                _fractalVisualization.SetColorMode(FractalColorMode.WCoordinate);
+                return true;
+            case TransformationCommand.ColorFractalByIterations:
+                _fractalVisualization.SetColorMode(FractalColorMode.EscapeIterations);
+                return true;
+            case TransformationCommand.ToggleFractalWSlice:
+                _fractalVisualization.ToggleWSlice();
+                return true;
+            case TransformationCommand.DecreaseFractalSliceW:
+                _fractalVisualization.AdjustSliceW(
+                    -FractalSliceStep,
+                    _pendingJuliaParameters.MinimumCoordinate,
+                    _pendingJuliaParameters.MaximumCoordinate);
+                return true;
+            case TransformationCommand.IncreaseFractalSliceW:
+                _fractalVisualization.AdjustSliceW(
+                    FractalSliceStep,
+                    _pendingJuliaParameters.MinimumCoordinate,
+                    _pendingJuliaParameters.MaximumCoordinate);
+                return true;
+            case TransformationCommand.CycleFractalPointSize:
+                _fractalVisualization.CyclePointSize();
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    private void StartFractalGeneration()
+    {
+        _fractalGeneration?.Cancel();
+        _fractalGeneration = _fractalGenerator.Start(_pendingJuliaParameters);
+    }
+
+    private void AdvanceFractalGeneration()
+    {
+        if (!IsFractalGenerationActive)
+        {
+            return;
+        }
+
+        _fractalGeneration!.ProcessBatch(FractalSamplesPerUpdate);
+        if (_fractalGeneration.IsCompleted)
+        {
+            FractalObject.ReplaceGeometry(_fractalGeneration.CreateResult());
+            _fractalGeneration = null;
+        }
+    }
+
+    private void SetJuliaConstant(Quaternion4D constant) =>
+        _pendingJuliaParameters = _pendingJuliaParameters with { Constant = constant };
+
+    private static double ClampJuliaConstant(double value) => Math.Clamp(value, -1.5, 1.5);
+
+    private static Viewport CreateSceneViewport(Viewport fullViewport)
+    {
+        var panelWidth = Math.Min(
+            TransformationControlPanel.PreferredWidth,
+            fullViewport.Width);
+        return new Viewport(
+            0,
+            0,
+            Math.Max(1, fullViewport.Width - panelWidth),
+            fullViewport.Height);
     }
 }

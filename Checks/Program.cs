@@ -1,16 +1,25 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using HyperSpace.Diagnostics;
 using HyperSpace.Geometry;
 using HyperSpace.Input;
 using HyperSpace.Mathematics;
+using HyperSpace.Physics;
 using HyperSpace.Projection;
 using HyperSpace.Rendering;
 using HyperSpace.Scene;
 using HyperSpace.Transformations;
 using HyperSpace.UI;
 using Microsoft.Xna.Framework;
+using Microsoft.Xna.Framework.Graphics;
 using Microsoft.Xna.Framework.Input;
+
+if (args.Contains("--profile-nbody", StringComparer.OrdinalIgnoreCase))
+{
+    RunNBodyProfilingReport();
+    return;
+}
 
 var checks = new (string Name, Action Run)[]
 {
@@ -21,6 +30,32 @@ var checks = new (string Name, Action Run)[]
     ("Irregular 4D polytope topology", CheckIrregularPolytope),
     ("4D spiral sampling", CheckSpiralSampling),
     ("Curve playback state", CheckCurvePlayback),
+    ("Quaternion algebra", CheckQuaternionAlgebra),
+    ("Quaternion Julia iteration", CheckQuaternionJuliaIteration),
+    ("Incremental 4D fractal generation", CheckIncrementalFractalGeneration),
+    ("Fractal presets and display state", CheckFractalPresetsAndDisplayState),
+    ("4D physics integration", CheckPhysicsIntegration),
+    ("4D gravity and W movement", CheckPhysicsGravityAndWMovement),
+    ("W hyperplane collision", CheckHyperplaneCollision),
+    ("Fixed timestep physics", CheckFixedTimestepPhysics),
+    ("Deterministic particle spawning", CheckDeterministicParticleSpawning),
+    ("Physics hyperplane visualization", CheckPhysicsHyperplaneVisualization),
+    ("4D inverse-cube gravity", CheckFourDimensionalGravityLaw),
+    ("Pairwise gravity symmetry", CheckPairwiseGravitySymmetry),
+    ("Static central body and free motion", CheckStaticCentralBodyAndFreeMotion),
+    ("Gravity Lab trajectory and determinism", CheckGravityLabTrajectoryAndDeterminism),
+    ("Gravity Lab velocity regimes", CheckGravityLabVelocityRegimes),
+    ("4D aggregation conservation", CheckAggregationConservation),
+    ("Aggregation through W", CheckAggregationThroughW),
+    ("N-body projected screen picking", CheckNBodyProjectedScreenPicking),
+    ("N-body selection trail and aggregation", CheckNBodySelectionLifecycle),
+    ("Performance profiler instrumentation", CheckPerformanceProfilerInstrumentation),
+    ("N-body input validation", CheckNBodyInputValidation),
+    ("Deterministic non-overlapping 4D cloud", CheckNBodyGeneration),
+    ("N-body gravity quality modes", CheckNBodyGravityQualityModes),
+    ("N-body gravity and aggregation toggles", CheckNBodyIndependentToggles),
+    ("N-body lab reset and defaults", CheckNBodyLabLifecycle),
+    ("N-body scale benchmark", CheckNBodyScaleBenchmark),
     ("Common geometry projection", CheckCommonGeometryProjection),
     ("4D reference grid", CheckReferenceGrid),
     ("Six plane rotations", CheckPlaneRotations),
@@ -1010,6 +1045,1130 @@ static void CheckInputMapping()
         "Space must reset 3D view zoom.");
 }
 
+static void CheckQuaternionAlgebra()
+{
+    var one = new Quaternion4D(1.0, 0.0, 0.0, 0.0);
+    var i = new Quaternion4D(0.0, 1.0, 0.0, 0.0);
+    var j = new Quaternion4D(0.0, 0.0, 1.0, 0.0);
+    var k = new Quaternion4D(0.0, 0.0, 0.0, 1.0);
+
+    RequireQuaternionNear(i * i, -1.0 * one, 1e-12, "i^2 must equal -1.");
+    RequireQuaternionNear(j * j, -1.0 * one, 1e-12, "j^2 must equal -1.");
+    RequireQuaternionNear(k * k, -1.0 * one, 1e-12, "k^2 must equal -1.");
+    RequireQuaternionNear(i * j, k, 1e-12, "ij must equal k.");
+    RequireQuaternionNear(j * i, -1.0 * k, 1e-12, "ji must equal -k.");
+    Require(i * j != j * i, "Quaternion multiplication must be non-commutative.");
+
+    var q = new Quaternion4D(1.5, -2.0, 0.25, 3.0);
+    RequireQuaternionNear(q.Square(), q * q, 1e-12,
+        "The optimized square formula must match quaternion multiplication.");
+    RequireNear(q.SquaredMagnitude, 15.3125, 1e-12,
+        "Squared magnitude must sum all four squared components.");
+    RequireQuaternionNear(q + one, new Quaternion4D(2.5, -2.0, 0.25, 3.0), 1e-12,
+        "Quaternion addition must be component-wise.");
+}
+
+static void CheckQuaternionJuliaIteration()
+{
+    var parameters = JuliaParameters.Default with
+    {
+        Constant = Quaternion4D.Zero,
+        MaxIterations = 8,
+        EscapeRadius = 2.0
+    };
+    var origin = QuaternionJuliaGenerator4D.Evaluate(Vector4D.Zero, parameters);
+    Require(origin.IsBounded && origin.Iterations == parameters.MaxIterations,
+        "q0=0 with C=0 must remain bounded.");
+
+    var outside = QuaternionJuliaGenerator4D.Evaluate(
+        new Vector4D(2.0, 0.0, 0.0, 0.0),
+        parameters);
+    Require(!outside.IsBounded && outside.Iterations == 1,
+        "q0=2 must escape after the first q^2 iteration for radius 2.");
+
+    var nonFinite = QuaternionJuliaGenerator4D.Evaluate(
+        new Vector4D(double.MaxValue, 0.0, 0.0, 0.0),
+        parameters);
+    Require(!nonFinite.IsBounded,
+        "Overflowing samples must be classified as escaped instead of propagating NaN.");
+}
+
+static void CheckIncrementalFractalGeneration()
+{
+    var parameters = JuliaParameters.Default with
+    {
+        Resolution = 4,
+        MaxIterations = 8,
+        MinimumCoordinate = -1.0,
+        MaximumCoordinate = 1.0
+    };
+    var generator = new QuaternionJuliaGenerator4D();
+    var generation = generator.Start(parameters);
+
+    generation.ProcessBatch(17);
+    Require(generation.ProcessedSampleCount == 17 && !generation.IsCompleted,
+        "A batch must advance only the requested number of grid samples.");
+    Require(generation.Progress > 0.0 && generation.Progress < 1.0,
+        "Incremental generation must expose intermediate progress.");
+
+    while (!generation.IsCompleted)
+    {
+        generation.ProcessBatch(31);
+    }
+
+    var fractal = generation.CreateResult();
+    Require(fractal.Samples.Count == 256,
+        "A resolution-4 4D grid must contain 4^4 = 256 samples.");
+    Require(fractal.Vertices.Count == fractal.Samples.Count && fractal.Edges.Count == 0,
+        "The first fractal representation must be a point cloud without invented edges.");
+    Require(fractal.Vertices.Contains(new Vector4D(-1.0, -1.0, -1.0, -1.0)) &&
+        fractal.Vertices.Contains(new Vector4D(1.0, 1.0, 1.0, 1.0)),
+        "The 4D grid must include both endpoints on all four axes.");
+
+    var pipeline = new WireframeProjectionPipeline4D();
+    var projected = pipeline.Project(
+        fractal,
+        new Transform4D(),
+        new Camera4D(),
+        new PerspectiveProjector4D());
+    Require(projected.Vertices.Count == fractal.Vertices.Count,
+        "Every fractal sample must pass through the common 4D projection pipeline.");
+
+    var cancelled = generator.Start(parameters);
+    cancelled.ProcessBatch(5);
+    cancelled.Cancel();
+    cancelled.ProcessBatch(100);
+    Require(cancelled.IsCancelled && cancelled.ProcessedSampleCount == 5,
+        "Cancel must stop later batches without discarding the current displayed geometry.");
+    RequireThrows<InvalidOperationException>(() => _ = cancelled.CreateResult(),
+        "A cancelled partial generation must not be published as complete geometry.");
+}
+
+static void CheckFractalPresetsAndDisplayState()
+{
+    var generator = new QuaternionJuliaGenerator4D();
+    var boundedCounts = new List<int>();
+    foreach (var constant in new[]
+    {
+        JuliaParameters.Preset1,
+        JuliaParameters.Preset2,
+        JuliaParameters.Preset3
+    })
+    {
+        var parameters = JuliaParameters.Default with
+        {
+            Constant = constant,
+            Resolution = 8,
+            MaxIterations = 24
+        };
+        var generation = generator.Start(parameters);
+        while (!generation.IsCompleted)
+        {
+            generation.ProcessBatch(257);
+        }
+
+        var result = generation.CreateResult();
+        boundedCounts.Add(result.BoundedPointCount);
+    }
+
+    Require(boundedCounts.All(count => count > 0 && count < 4096),
+        $"Each preset must contain bounded and escaped samples; bounded counts were " +
+        string.Join(", ", boundedCounts) + ".");
+    Require(boundedCounts.Distinct().Count() >= 2,
+        "The presets must not all produce the same sampled structure.");
+
+    var settings = new FractalVisualizationSettings();
+    Require(settings.ColorMode == FractalColorMode.EscapeIterations,
+        "Iteration coloring must be the informative default.");
+    settings.SetColorMode(FractalColorMode.WCoordinate);
+    settings.ToggleWSlice();
+    settings.AdjustSliceW(10.0, -1.5, 1.5);
+    settings.CyclePointSize();
+    settings.CyclePointSize();
+    Require(settings.ColorMode == FractalColorMode.WCoordinate &&
+        settings.ShowWSlice &&
+        settings.SliceW == 1.5 &&
+        settings.PointSize == 3,
+        "Fractal display controls must update and clamp their state.");
+    settings.Reset();
+    Require(settings.ColorMode == FractalColorMode.EscapeIterations &&
+        !settings.ShowWSlice &&
+        settings.SliceW == 0.0 &&
+        settings.PointSize == 1,
+        "Fractal display reset must restore all defaults.");
+}
+
+static void CheckPhysicsIntegration()
+{
+    var body = new PhysicsBody4D(
+        id: 1,
+        position: Vector4D.Zero,
+        velocity: new Vector4D(1.0, 2.0, 3.0, 4.0));
+    body.Integrate(1.0);
+
+    RequireVectorNear(body.Position, new Vector4D(1.0, 2.0, 3.0, 4.0), 1e-12,
+        "Zero-acceleration integration must move in all four velocity components.");
+    RequireVectorNear(body.Velocity, new Vector4D(1.0, 2.0, 3.0, 4.0), 1e-12,
+        "Zero acceleration must preserve the complete 4D velocity.");
+    RequireNear(body.Velocity.LengthSquared, 30.0, 1e-12,
+        "4D speed squared must include vx, vy, vz, and vw.");
+    RequireNear(body.KineticEnergy, 15.0, 1e-12,
+        "Kinetic energy must be 0.5*m*|v|^2.");
+}
+
+static void CheckPhysicsGravityAndWMovement()
+{
+    var yWorld = new PhysicsWorld4D(fixedDeltaTime: 1.0);
+    var falling = yWorld.AddBody(Vector4D.Zero, Vector4D.Zero);
+    yWorld.SetGravity(new Vector4D(0.0, -9.8, 0.0, 0.0));
+    Require(yWorld.StepOnce(), "An enabled world must execute one manual fixed step.");
+    RequireNear(falling.Velocity.Y, -9.8, 1e-12,
+        "Y gravity must update Y velocity after one second.");
+    RequireNear(falling.Position.Y, -9.8, 1e-12,
+        "Semi-implicit Euler must move with the newly updated Y velocity.");
+
+    var wWorld = new PhysicsWorld4D(fixedDeltaTime: 0.5);
+    wWorld.ToggleCollisions();
+    var wBody = wWorld.AddBody(
+        new Vector4D(0.0, 0.0, 0.0, 4.0),
+        new Vector4D(0.0, 0.0, 0.0, 5.0));
+    wWorld.SetGravity(new Vector4D(0.0, 0.0, 0.0, -9.8));
+    wWorld.StepOnce();
+    RequireNear(wBody.Velocity.W, 0.1, 1e-12,
+        "W gravity must change only the true fourth velocity component.");
+    RequireNear(wBody.Position.W, 4.05, 1e-12,
+        "W position must integrate from the updated W velocity.");
+    RequireNear(wBody.Position.X, 0.0, 1e-12,
+        "Pure W movement must not leak into X through projection or integration.");
+}
+
+static void CheckHyperplaneCollision()
+{
+    var plane = Hyperplane4D.WZero;
+    var elastic = new PhysicsBody4D(
+        1,
+        new Vector4D(0.0, 0.0, 0.0, 0.1),
+        new Vector4D(1.0, 0.0, 0.0, -2.0));
+    var energyBefore = elastic.KineticEnergy;
+    elastic.Integrate(0.1);
+    Require(plane.ResolveCollision(elastic, restitution: 1.0),
+        "Crossing from W>0 to W<0 must hit the W=0 hyperplane.");
+    RequireNear(elastic.Position.W, 0.0, 1e-12,
+        "Penetration correction must return the particle to W=0.");
+    RequireNear(elastic.Velocity.W, 2.0, 1e-12,
+        "A perfectly elastic W collision must reverse W velocity.");
+    RequireNear(elastic.Velocity.X, 1.0, 1e-12,
+        "Hyperplane response must preserve tangential X velocity.");
+    RequireNear(elastic.KineticEnergy, energyBefore, 1e-12,
+        "Restitution 1 must preserve kinetic energy for a plane reflection.");
+
+    var damped = new PhysicsBody4D(
+        2,
+        new Vector4D(0.0, 0.0, 0.0, -0.1),
+        new Vector4D(0.0, 0.0, 0.0, -2.0));
+    Require(plane.ResolveCollision(damped, restitution: 0.8),
+        "A penetrated particle must be resolved.");
+    RequireNear(damped.Velocity.W, 1.6, 1e-12,
+        "Restitution 0.8 must retain 80 percent of normal speed.");
+    RequireNear(damped.KineticEnergy, 1.28, 1e-12,
+        "Restitution below one must reduce kinetic energy.");
+
+    var stopped = new PhysicsBody4D(
+        3,
+        new Vector4D(0.0, 0.0, 0.0, -0.1),
+        new Vector4D(0.0, 0.0, 0.0, -2.0));
+    plane.ResolveCollision(stopped, restitution: 0.0);
+    RequireNear(stopped.Velocity.W, 0.0, 1e-12,
+        "Restitution zero must remove inward normal velocity.");
+}
+
+static void CheckFixedTimestepPhysics()
+{
+    var world = new PhysicsWorld4D();
+    world.SetGravity(Vector4D.Zero);
+    var body = world.AddBody(Vector4D.Zero, new Vector4D(1.0, 0.0, 0.0, 0.0));
+
+    Require(world.Update(1.0) == 0,
+        "The debug-friendly default paused state must not advance automatically.");
+    world.Play();
+    Require(world.Update(world.FixedDeltaTime + 1e-12) == 1,
+        "One fixed interval must execute exactly one physics step.");
+    RequireNear(body.Position.X, world.FixedDeltaTime, 1e-12,
+        "Rendering elapsed time must be quantized to the fixed physics interval.");
+
+    world.AdjustTimeScale(+1);
+    RequireNear(world.TimeScale, 2.0, 1e-12, "The next supported time scale must be 2x.");
+    Require(world.Update(world.FixedDeltaTime + 1e-12) == 2,
+        "A 2x time scale must execute two fixed steps for one render interval.");
+    world.Pause();
+    var pausedPosition = body.Position;
+    Require(world.Update(1.0) == 0 && body.Position == pausedPosition,
+        "Pause must stop automatic simulation without changing rendering time.");
+    Require(world.StepOnce(), "STEP must execute while the enabled world is paused.");
+    RequireNear(body.Position.X, pausedPosition.X + world.FixedDeltaTime, 1e-12,
+        "STEP must execute exactly one fixed interval.");
+}
+
+static void CheckDeterministicParticleSpawning()
+{
+    var world = new PhysicsWorld4D();
+    var velocity = new Vector4D(0.0, 0.0, 0.0, 5.0);
+    Require(world.SpawnParticles(10, velocity) == 10,
+        "SPAWN 10 must create ten particles below the safety cap.");
+    var firstRun = world.Bodies.Select(body => body.Position).ToArray();
+    Require(world.Bodies.All(body => body.Velocity == velocity),
+        "Configured pure-W initial velocity must not receive random XYZ jitter.");
+
+    world.Clear();
+    world.SpawnParticles(10, velocity);
+    Require(firstRun.SequenceEqual(world.Bodies.Select(body => body.Position)),
+        "Clearing and spawning again must reproduce the same deterministic positions.");
+}
+
+static void CheckPhysicsHyperplaneVisualization()
+{
+    var grid = new HyperplaneGrid4D(extent: 2.0, coordinatesPerAxis: 5);
+    Require(grid.Vertices.Count == 150 && grid.Edges.Count == 75,
+        "A 5x5 lattice in each X/Y/Z direction must contain 75 finite line segments.");
+    Require(grid.Vertices.All(vertex => vertex.W == 0.0),
+        "Every collision-boundary visualization sample must lie on the true W=0 hyperplane.");
+
+    foreach (var edge in grid.Edges)
+    {
+        var start = grid.Vertices[edge.Start];
+        var end = grid.Vertices[edge.End];
+        Require(ChangedCoordinateCount(start, end) == 1,
+            "Each hyperplane lattice segment must follow one X/Y/Z tangent direction.");
+    }
+
+    var pipeline = new WireframeProjectionPipeline4D();
+    var projected = pipeline.Project(
+        grid.Vertices,
+        grid.Edges,
+        new Transform4D(),
+        new Camera4D(),
+        new PerspectiveProjector4D());
+    Require(projected.Vertices.Count == grid.Vertices.Count &&
+        projected.VisibleEdgeCount == grid.Edges.Count,
+        "The W=0 lattice must use the common safe 4D projection pipeline.");
+}
+
+static void CheckFourDimensionalGravityLaw()
+{
+    var first = Vector4D.Zero;
+    var second = new Vector4D(1.0, 2.0, 3.0, 4.0);
+    RequireNear((second - first).LengthSquared, 30.0, 1e-12,
+        "4D squared distance must include X, Y, Z, and W.");
+
+    var directionTest = GravitySystem4D.CalculateAcceleration(
+        first,
+        second,
+        sourceMass: 3.0,
+        gravitationalConstant: 2.0,
+        softening: 0.1);
+    Require(directionTest.X > 0.0 && directionTest.Y > 0.0 &&
+        directionTest.Z > 0.0 && directionTest.W > 0.0,
+        "Gravitational acceleration must point from the target toward the source.");
+
+    var pureW = GravitySystem4D.CalculateAcceleration(
+        Vector4D.Zero,
+        new Vector4D(0.0, 0.0, 0.0, 10.0),
+        sourceMass: 5.0,
+        gravitationalConstant: 1.0,
+        softening: 0.1);
+    RequireNear(pureW.X, 0.0, 1e-12, "A pure-W separation must not create X acceleration.");
+    RequireNear(pureW.Y, 0.0, 1e-12, "A pure-W separation must not create Y acceleration.");
+    RequireNear(pureW.Z, 0.0, 1e-12, "A pure-W separation must not create Z acceleration.");
+    Require(pureW.W > 0.0, "A source at positive W must attract entirely toward positive W.");
+
+    var numerical = GravitySystem4D.CalculateAcceleration(
+        Vector4D.Zero,
+        new Vector4D(4.0, 0.0, 0.0, 0.0),
+        sourceMass: 1000.0,
+        gravitationalConstant: 0.05,
+        softening: 1e-6);
+    RequireNear(numerical.Length, 0.05 * 1000.0 / Math.Pow(4.0, 3.0), 1e-10,
+        "Far from negligible softening, acceleration magnitude must be G*M/R^3.");
+
+    var coincident = GravitySystem4D.CalculateAcceleration(
+        Vector4D.Zero,
+        Vector4D.Zero,
+        sourceMass: 1000.0,
+        gravitationalConstant: 0.05,
+        softening: 0.25);
+    Require(coincident.IsFinite && coincident == Vector4D.Zero,
+        "Softening must make coincident positions finite without an arbitrary force direction.");
+}
+
+static void CheckPairwiseGravitySymmetry()
+{
+    var world = new PhysicsWorld4D(fixedDeltaTime: 0.05);
+    world.SetGravity(Vector4D.Zero);
+    world.SetCollisionsEnabled(false);
+    world.SetGravitationalConstant(0.4);
+    world.SetGravitySoftening(0.2);
+    var first = world.AddBody(
+        new Vector4D(-1.0, 0.5, 0.0, -0.25),
+        new Vector4D(0.1, 0.2, 0.3, 0.4),
+        mass: 2.0);
+    var second = world.AddBody(
+        new Vector4D(2.0, -0.5, 1.0, 0.75),
+        new Vector4D(-0.2, 0.1, -0.1, 0.05),
+        mass: 3.0);
+    world.SetMutualGravityEnabled(true);
+
+    var firstForce = first.Acceleration * first.Mass;
+    var secondForce = second.Acceleration * second.Mass;
+    RequireVectorNear(firstForce + secondForce, Vector4D.Zero, 1e-12,
+        "Pairwise internal gravitational forces must be equal and opposite.");
+
+    var momentumBefore = (first.Velocity * first.Mass) + (second.Velocity * second.Mass);
+    world.StepOnce();
+    var momentumAfter = (first.Velocity * first.Mass) + (second.Velocity * second.Mass);
+    RequireVectorNear(momentumAfter, momentumBefore, 1e-12,
+        "One isolated pairwise step must preserve total 4D momentum to roundoff.");
+}
+
+static void CheckStaticCentralBodyAndFreeMotion()
+{
+    var gravityWorld = new PhysicsWorld4D(fixedDeltaTime: 0.1);
+    gravityWorld.SetGravity(Vector4D.Zero);
+    gravityWorld.SetCollisionsEnabled(false);
+    gravityWorld.SetMutualGravityEnabled(true);
+    var central = gravityWorld.AddBody(Vector4D.Zero, Vector4D.Zero, mass: 1000.0, isStatic: true);
+    var orbiter = gravityWorld.AddBody(
+        new Vector4D(4.0, 0.0, 0.0, 0.0),
+        new Vector4D(0.0, 1.0, 0.0, 0.5));
+    gravityWorld.StepOnce();
+    Require(central.Position == Vector4D.Zero && central.Velocity == Vector4D.Zero,
+        "A static central mass must create a field without integrating position or velocity.");
+    Require(orbiter.Acceleration.X < 0.0,
+        "An orbiter at positive X must accelerate toward a central body at the origin.");
+
+    var freeWorld = new PhysicsWorld4D(fixedDeltaTime: 0.5);
+    freeWorld.SetGravity(Vector4D.Zero);
+    freeWorld.SetCollisionsEnabled(false);
+    freeWorld.SetGravitationalConstant(0.0);
+    freeWorld.SetMutualGravityEnabled(true);
+    var freeBody = freeWorld.AddBody(
+        new Vector4D(1.0, 2.0, 3.0, 4.0),
+        new Vector4D(-1.0, 2.0, -3.0, 4.0));
+    freeWorld.StepOnce();
+    RequireVectorNear(freeBody.Position, new Vector4D(0.5, 3.0, 1.5, 6.0), 1e-12,
+        "With external gravity zero and G=0, a body must move at constant 4D velocity.");
+    RequireVectorNear(freeBody.Velocity, new Vector4D(-1.0, 2.0, -3.0, 4.0), 1e-12,
+        "G=0 must not change velocity.");
+}
+
+static void CheckGravityLabTrajectoryAndDeterminism()
+{
+    var firstWorld = new PhysicsWorld4D(fixedDeltaTime: 0.05);
+    var firstLab = new GravityLab4D(firstWorld);
+    firstLab.ResetExperiment();
+    Require(firstLab.HasExperiment && firstWorld.Bodies.Count == 2,
+        "Reset must create exactly one central body and one orbiter.");
+    Require(firstLab.CentralBody!.IsStatic && !firstLab.Orbiter!.IsStatic,
+        "The central preset must be static and the orbiter dynamic.");
+    Require(firstLab.Trail.Points.Count == 1,
+        "A reset trajectory must retain the original 4D initial position.");
+
+    for (var step = 0; step < 20; step++)
+    {
+        firstWorld.StepOnce();
+    }
+
+    Require(firstLab.Trail.Points.Count == 21,
+        "Every fixed physics step must append one original Vector4D trail point.");
+    Require(firstLab.Trail.Points.All(point => point.IsFinite),
+        "The softened initial experiment must keep its trajectory finite.");
+    var firstFinalPosition = firstLab.Orbiter!.Position;
+
+    var secondWorld = new PhysicsWorld4D(fixedDeltaTime: 0.05);
+    var secondLab = new GravityLab4D(secondWorld);
+    secondLab.ResetExperiment();
+    for (var step = 0; step < 20; step++)
+    {
+        secondWorld.StepOnce();
+    }
+
+    RequireVectorNear(secondLab.Orbiter!.Position, firstFinalPosition, 1e-12,
+        "Identical Gravity Lab initial conditions must produce deterministic motion.");
+    Require(secondLab.Trail.Points.SequenceEqual(firstLab.Trail.Points),
+        "The complete stored 4D trajectory must be deterministic.");
+
+    var storedTrajectory = secondLab.Trail.Points.ToArray();
+    var trailEdges = Enumerable.Range(1, storedTrajectory.Length - 1)
+        .Select(index => new Edge(index - 1, index, EdgeKind.Grid))
+        .ToArray();
+    var pipeline = new WireframeProjectionPipeline4D();
+    var camera = new Camera4D();
+    var originalProjection = pipeline.Project(
+        storedTrajectory,
+        trailEdges,
+        new Transform4D(),
+        camera,
+        new PerspectiveProjector4D());
+    camera.Rotate(RotationPlane4D.XW, 0.35);
+    var rotatedProjection = pipeline.Project(
+        storedTrajectory,
+        trailEdges,
+        new Transform4D(),
+        camera,
+        new PerspectiveProjector4D());
+    Require(secondLab.Trail.Points.SequenceEqual(storedTrajectory),
+        "Camera rotation must not mutate stored physics trajectory points.");
+    Require(originalProjection.Vertices.Zip(rotatedProjection.Vertices)
+        .Any(pair => pair.First.Position != pair.Second.Position),
+        "A 4D camera rotation must reproject the original trail to a different 3D representation.");
+
+    var initialPosition = secondLab.OrbiterInitialPosition;
+    var centralMass = secondLab.CentralMass;
+    secondLab.SetVelocityPreset(GravityLab4D.HighVelocity);
+    Require(secondLab.OrbiterInitialPosition == initialPosition && secondLab.CentralMass == centralMass,
+        "Velocity presets must change only pending initial velocity.");
+    secondLab.UseXYWVelocity();
+    Require(secondLab.OrbiterInitialVelocity.W != 0.0,
+        "The XY+W experiment must contain a real non-zero W velocity component.");
+
+    var boundedTrail = new Trajectory4D();
+    boundedTrail.SetCapacity(Trajectory4D.MinimumCapacity);
+    for (var index = 0; index < Trajectory4D.MinimumCapacity + 25; index++)
+    {
+        boundedTrail.Append(new Vector4D(index, 0.0, 0.0, 0.0));
+    }
+
+    Require(boundedTrail.Points.Count == Trajectory4D.MinimumCapacity &&
+        boundedTrail.Points[0].X == 25.0,
+        "A full trail must discard only its oldest original 4D positions.");
+}
+
+static void CheckGravityLabVelocityRegimes()
+{
+    var low = SimulateGravityLab(GravityLab4D.LowVelocity, wVelocity: 0.0, stepCount: 3600);
+    var medium = SimulateGravityLab(GravityLab4D.MediumVelocity, wVelocity: 0.0, stepCount: 3600);
+    var high = SimulateGravityLab(GravityLab4D.HighVelocity, wVelocity: 0.0, stepCount: 3600);
+    var xyw = SimulateGravityLab(GravityLab4D.MediumVelocity, wVelocity: 0.75, stepCount: 3600);
+
+    Require(low.IsFinite && medium.IsFinite && high.IsFinite && xyw.IsFinite,
+        "All documented 60-second velocity experiments must remain numerically finite.");
+    Require(Math.Abs(xyw.FinalW) > 0.1,
+        "The XY+W experiment must retain observable real W displacement.");
+    Require(low.MaximumDistance != medium.MaximumDistance &&
+        medium.MaximumDistance != high.MaximumDistance,
+        "Different fixed initial velocities must produce measurably different trajectories.");
+
+    Console.WriteLine(
+        $"INFO: 60s gravity regimes  " +
+        $"LOW r[min,max,final]=[{low.MinimumDistance:0.000},{low.MaximumDistance:0.000},{low.FinalDistance:0.000}]  " +
+        $"MED=[{medium.MinimumDistance:0.000},{medium.MaximumDistance:0.000},{medium.FinalDistance:0.000}]  " +
+        $"HIGH=[{high.MinimumDistance:0.000},{high.MaximumDistance:0.000},{high.FinalDistance:0.000}]  " +
+        $"XYW finalW={xyw.FinalW:0.000}");
+}
+
+static void CheckAggregationConservation()
+{
+    var first = new PhysicsBody4D(
+        1,
+        new Vector4D(0.0, 0.0, 0.0, 0.0),
+        new Vector4D(2.0, 0.0, 0.0, 0.0),
+        mass: 0.25,
+        radius: 0.2);
+    var second = new PhysicsBody4D(
+        2,
+        new Vector4D(0.1, 0.0, 0.0, 0.0),
+        new Vector4D(-1.0, 0.0, 0.0, 0.0),
+        mass: 1.0,
+        radius: 0.2);
+    var system = new AggregationCollisionSystem4D();
+
+    Require(system.Resolve([first, second]) == 1,
+        "One overlapping pair must produce exactly one deterministic merge.");
+    Require(!first.IsAlive && second.IsAlive,
+        "The larger body must survive and the smaller body must disappear.");
+    RequireNear(second.Mass, 1.25, 1e-12, "Merged mass must be additive.");
+    RequireNear(second.Velocity.X, -0.4, 1e-12,
+        "Merged velocity must conserve momentum: (0.25*2 + 1*(-1))/1.25 = -0.4.");
+    RequireNear(second.Position.X, 0.08, 1e-12,
+        "Merged position must be the four-dimensional center of mass.");
+    RequireNear(
+        second.Radius,
+        AggregationCollisionSystem4D.RadiusFromMass(1.25, system.RadiusScale),
+        1e-12,
+        "Merged radius must follow r=k*m^(1/4).");
+
+    var largeFirst = new PhysicsBody4D(
+        3,
+        new Vector4D(-3.0, 0.0, 0.0, 0.0),
+        new Vector4D(2.0, 0.0, 0.0, 0.0),
+        mass: 1.0,
+        radius: 2.0);
+    var largeSecond = new PhysicsBody4D(
+        4,
+        Vector4D.Zero,
+        new Vector4D(-1.0, 0.0, 0.0, 0.0),
+        mass: 4.0,
+        radius: 2.0);
+    Require(system.Resolve([largeFirst, largeSecond]) == 1, "The second worked example must merge.");
+    RequireNear(largeSecond.Mass, 5.0, 1e-12, "Worked example mass mismatch.");
+    RequireNear(largeSecond.Velocity.X, -0.4, 1e-12, "Worked example momentum mismatch.");
+    RequireNear(largeSecond.Position.X, -0.6, 1e-12, "Worked example COM mismatch.");
+}
+
+static void CheckAggregationThroughW()
+{
+    var first = new PhysicsBody4D(
+        1,
+        Vector4D.Zero,
+        Vector4D.Zero,
+        radius: 0.08);
+    var second = new PhysicsBody4D(
+        2,
+        new Vector4D(0.0, 0.0, 0.0, 0.12),
+        Vector4D.Zero,
+        radius: 0.08);
+    var system = new AggregationCollisionSystem4D();
+    Require(system.Resolve([first, second]) == 1,
+        "Bodies separated only in W must collide using full 4D distance.");
+
+    var distantFirst = new PhysicsBody4D(3, Vector4D.Zero, Vector4D.Zero, radius: 0.1);
+    var distantSecond = new PhysicsBody4D(
+        4,
+        new Vector4D(0.0, 0.0, 0.0, 2.0),
+        Vector4D.Zero,
+        radius: 0.1);
+    Require(system.Resolve([distantFirst, distantSecond]) == 0 &&
+        distantFirst.IsAlive && distantSecond.IsAlive,
+        "Bodies separated by W=2 must not be mistaken for coincident projected 3D points.");
+}
+
+static void CheckNBodyProjectedScreenPicking()
+{
+    var world = new PhysicsWorld4D();
+    var nearBody = world.AddBody(
+        new Vector4D(1.0, 0.0, 0.0, 0.0),
+        Vector4D.Zero,
+        radius: 0.2);
+    world.AddBody(
+        new Vector4D(2.0, 0.0, 0.0, 4.0),
+        Vector4D.Zero,
+        radius: 0.2);
+
+    var camera4D = new Camera4D();
+    var projector4D = new PerspectiveProjector4D();
+    var camera3D = new OrbitCamera3D();
+    var viewport = new Viewport(0, 0, 940, 900);
+    var pipeline = new WireframeProjectionPipeline4D();
+    var projected = pipeline.Project(
+        world.Bodies.Select(body => body.Position).ToArray(),
+        Array.Empty<Edge>(),
+        new Transform4D(),
+        camera4D,
+        projector4D);
+    var click = ScreenPoint(projected.Vertices[0], viewport, camera3D);
+
+    Require(NBodyScreenPicker.Pick(
+            click,
+            viewport,
+            projected,
+            world.Bodies,
+            camera3D,
+            pointScale: 1.0) == nearBody,
+        "Coincident screen projections must choose the nearer 4D camera-depth candidate.");
+
+    camera4D.MoveWorld(new Vector4D(0.2, -0.1, 0.15, 0.0));
+    camera4D.Rotate(RotationPlane4D.XW, 0.25);
+    projected = pipeline.Project(
+        world.Bodies.Select(body => body.Position).ToArray(),
+        Array.Empty<Edge>(),
+        new Transform4D(),
+        camera4D,
+        projector4D);
+    click = ScreenPoint(projected.Vertices[0], viewport, camera3D);
+    Require(NBodyScreenPicker.Pick(
+            click,
+            viewport,
+            projected,
+            world.Bodies,
+            camera3D,
+            pointScale: 1.0) == nearBody,
+        "Picking must use the current 4D camera projection after XW rotation and translation.");
+}
+
+static void CheckNBodySelectionLifecycle()
+{
+    var world = new PhysicsWorld4D();
+    var lab = new NBodyLab4D(world);
+    lab.Settings.TryApplyBodyCount("2", out _);
+    Require(lab.GenerateSystem(), "A two-body selection fixture must generate.");
+    var first = world.Bodies[0];
+    var second = world.Bodies[1];
+
+    lab.SetTrailMode(NBodyTrailMode4D.SelectedBody);
+    Require(lab.SelectBody(first) && ReferenceEquals(world.SelectedBody, first),
+        "Selecting a generated body must update the world's selected body.");
+    Require(lab.SelectedTrail.Points.Count == 1 &&
+        lab.SelectedTrail.Points[0] == first.Position,
+        "Selecting a body must immediately reset the selected trail to that body.");
+    Require(world.StepOnce() && lab.SelectedTrail.Points.Count == 2,
+        "The selected trail must survive normal simulation steps.");
+
+    Require(lab.SelectBody(second) && ReferenceEquals(world.SelectedBody, second),
+        "Selecting another body must change the trail target.");
+    Require(lab.SelectedTrail.Points.Count == 1 &&
+        lab.SelectedTrail.Points[0] == second.Position,
+        "Changing selection must discard the previous body's trail.");
+
+    var aggregationWorld = new PhysicsWorld4D();
+    aggregationWorld.SetMutualGravityEnabled(false);
+    aggregationWorld.SetGravity(Vector4D.Zero);
+    aggregationWorld.SetAggregationEnabled(true);
+    var absorbed = aggregationWorld.AddBody(
+        Vector4D.Zero,
+        Vector4D.Zero,
+        mass: 1.0,
+        radius: 0.2);
+    var survivor = aggregationWorld.AddBody(
+        new Vector4D(0.1, 0.0, 0.0, 0.0),
+        Vector4D.Zero,
+        mass: 2.0,
+        radius: 0.2);
+    Require(aggregationWorld.SelectBody(absorbed),
+        "The lighter aggregation fixture body must be selectable.");
+    Require(aggregationWorld.StepOnce() && !absorbed.IsAlive && survivor.IsAlive,
+        "The selected lighter body must be absorbed by the deterministic survivor.");
+    Require(ReferenceEquals(aggregationWorld.SelectedBody, survivor) &&
+        aggregationWorld.Bodies.Contains(survivor),
+        "Selection must transfer to the merge survivor without leaving a dangling reference.");
+}
+
+static Point ScreenPoint(
+    ProjectedVertex3D projected,
+    Viewport viewport,
+    OrbitCamera3D camera)
+{
+    Require(projected.IsVisible, "The picking fixture must be visible after 4D projection.");
+    var center = new Vector3(
+        (float)projected.Position.X,
+        (float)projected.Position.Y,
+        (float)projected.Position.Z);
+    var screen = viewport.Project(
+        center,
+        camera.CreateProjection(viewport.AspectRatio),
+        camera.View,
+        Matrix.Identity);
+    return new Point((int)Math.Round(screen.X), (int)Math.Round(screen.Y));
+}
+
+static void CheckNBodyInputValidation()
+{
+    var settings = new NBodyGenerationSettings4D();
+    Require(settings.TryApplyBodyCount("1", out var lowClamped) &&
+        lowClamped && settings.BodyCount == 2,
+        "Body count text must clamp below the supported minimum.");
+    Require(settings.TryApplyBodyCount("99999", out var highClamped) &&
+        highClamped && settings.BodyCount == 20_000,
+        "Body count text must clamp above the supported maximum.");
+    Require(!settings.TryApplyBodyCount("not-a-number", out _) && settings.BodyCount == 20_000,
+        "Invalid count text must retain the last valid value.");
+    Require(settings.TryApplySeed("-42") && settings.Seed == -42,
+        "Seed input must accept the complete signed Int32 range.");
+    Require(!settings.TryApplySeed("4.2") && settings.Seed == -42,
+        "Invalid seed text must retain the last valid seed.");
+}
+
+static void CheckNBodyGeneration()
+{
+    var firstSettings = new NBodyGenerationSettings4D();
+    firstSettings.TryApplyBodyCount("500", out _);
+    var secondSettings = new NBodyGenerationSettings4D();
+    secondSettings.TryApplyBodyCount("500", out _);
+    var generator = new NBodyGenerator4D();
+    var first = generator.Generate(firstSettings);
+    var second = generator.Generate(secondSettings);
+
+    Require(first.Bodies.SequenceEqual(second.Bodies),
+        "Identical N-body settings and seed must produce exactly identical body states.");
+    Require(first.Bodies.All(body =>
+        Math.Abs(body.Position.X) <= firstSettings.PositionHalfRanges.X &&
+        Math.Abs(body.Position.Y) <= firstSettings.PositionHalfRanges.Y &&
+        Math.Abs(body.Position.Z) <= firstSettings.PositionHalfRanges.Z &&
+        Math.Abs(body.Position.W) <= firstSettings.PositionHalfRanges.W),
+        "Every generated coordinate must stay inside its independent 4D range.");
+    Require(first.Bodies.All(body =>
+        body.Velocity.Length >= firstSettings.MinimumSpeed - 1e-10 &&
+        body.Velocity.Length <= firstSettings.MaximumSpeed + 1e-10),
+        "Generated 4D speed magnitudes must stay inside the requested range.");
+    Require(first.Bodies.All(body =>
+        body.Mass >= firstSettings.MinimumMass && body.Mass <= firstSettings.MaximumMass),
+        "Generated masses must stay inside the requested uniform range.");
+    Require(first.Bodies.Any(body => body.Position.W < 0.0) &&
+        first.Bodies.Any(body => body.Position.W > 0.0) &&
+        first.Bodies.Any(body => Math.Abs(body.Velocity.W) > 1e-6),
+        "The random cloud must occupy and move through the true fourth spatial coordinate.");
+
+    for (var firstIndex = 0; firstIndex < first.Bodies.Count - 1; firstIndex++)
+    {
+        for (var secondIndex = firstIndex + 1; secondIndex < first.Bodies.Count; secondIndex++)
+        {
+            var a = first.Bodies[firstIndex];
+            var b = first.Bodies[secondIndex];
+            var minimumDistance = a.Radius + b.Radius;
+            Require((b.Position - a.Position).LengthSquared >= minimumDistance * minimumDistance,
+                "Generated bodies must not initially overlap in true 4D distance.");
+        }
+    }
+}
+
+static void CheckNBodyGravityQualityModes()
+{
+    var world = new PhysicsWorld4D();
+    world.SetGravity(Vector4D.Zero);
+    world.SetCollisionsEnabled(false);
+    world.SetGravityMode(GravityMode4D.Exact);
+    world.ReplaceBodies(CreateSeparatedStates(1_000));
+    Require(world.EffectiveGravityMode == GravityMode4D.Exact,
+        "Exact gravity must remain available at the documented 1000-body threshold.");
+    world.ReplaceBodies(CreateSeparatedStates(1_001));
+    Require(world.RequestedGravityMode == GravityMode4D.Exact &&
+        world.EffectiveGravityMode == GravityMode4D.MeanFieldApproximate,
+        "An exact request above the safety threshold must transparently fall back to mean field.");
+    world.SetGravityMode(GravityMode4D.MeanFieldApproximate);
+    Require(world.EffectiveGravityMode == GravityMode4D.MeanFieldApproximate,
+        "The user must be able to request the inexpensive approximation explicitly.");
+}
+
+static void CheckNBodyIndependentToggles()
+{
+    var world = new PhysicsWorld4D(fixedDeltaTime: 0.1);
+    world.SetGravity(Vector4D.Zero);
+    world.SetCollisionsEnabled(false);
+    world.SetMutualGravityEnabled(false);
+    world.SetAggregationEnabled(true);
+    world.ReplaceBodies([
+        new PhysicsBodyInitialState4D(Vector4D.Zero, Vector4D.Zero, 1.0, 0.2),
+        new PhysicsBodyInitialState4D(new Vector4D(0.1, 0.0, 0.0, 0.0), Vector4D.Zero, 1.0, 0.2)
+    ]);
+    world.StepOnce();
+    Require(world.Bodies.Count == 1,
+        "Aggregation and integration must continue while mutual gravity is OFF.");
+
+    world.ReplaceBodies(CreateSeparatedStates(2));
+    world.SetAggregationEnabled(false);
+    world.SetMutualGravityEnabled(true);
+    world.SetGravityMode(GravityMode4D.Exact);
+    world.StepOnce();
+    Require(world.Bodies.Count == 2 && world.Bodies.Any(body => body.Velocity.Length > 0.0),
+        "Gravity must continue while aggregation is OFF.");
+}
+
+static void CheckNBodyScaleBenchmark()
+{
+    int[] counts = [2, 10, 100, 1_000, 20_000];
+    foreach (var count in counts)
+    {
+        var settings = new NBodyGenerationSettings4D();
+        settings.TryApplyBodyCount(count.ToString(), out _);
+        var generator = new NBodyGenerator4D();
+        var generation = generator.Generate(settings);
+        var world = new PhysicsWorld4D();
+        world.SetGravity(Vector4D.Zero);
+        world.SetCollisionsEnabled(false);
+        world.SetGravityMode(count <= 1_000 ? GravityMode4D.Exact : GravityMode4D.MeanFieldApproximate);
+        world.SetAggregationRadiusScale(settings.RadiusScale);
+        world.SetAggregationCollisionInterval(NBodyLab4D.RecommendedCollisionInterval(count));
+        world.SetAggregationEnabled(true);
+        world.ReplaceBodies(generation.Bodies);
+        world.SetMutualGravityEnabled(true);
+        var measuredSteps = world.AggregationCollisionInterval;
+        var timer = System.Diagnostics.Stopwatch.StartNew();
+        for (var step = 0; step < measuredSteps; step++)
+        {
+            world.StepOnce();
+        }
+        timer.Stop();
+        Require(world.Bodies.All(body => body.Position.IsFinite && body.Velocity.IsFinite),
+            $"The {count:N0}-body benchmark must remain finite.");
+        Console.WriteLine(
+            $"BENCH: N={count,6:N0} generate={generation.ElapsedMilliseconds,8:0.0} ms " +
+            $"stepAvg={timer.Elapsed.TotalMilliseconds / measuredSteps,8:0.0} ms mode={world.EffectiveGravityMode} " +
+            $"collision/{world.AggregationCollisionInterval}");
+    }
+}
+
+static void CheckPerformanceProfilerInstrumentation()
+{
+    var profiled = new PhysicsWorld4D(fixedDeltaTime: 0.01);
+    var baseline = new PhysicsWorld4D(fixedDeltaTime: 0.01);
+    var states = CreateSeparatedStates(32);
+    ConfigureProfiledComparisonWorld(profiled, states);
+    ConfigureProfiledComparisonWorld(baseline, states);
+
+    profiled.Performance.BeginFrame(0.01, profiled.FixedDeltaTime, profiled.TimeScale);
+    profiled.StepOnce();
+    profiled.Performance.CompleteFrame(
+        profiled.AccumulatedSimulationTime,
+        simulationStepsPerSecond: 100.0);
+    baseline.StepOnce();
+
+    Require(profiled.Bodies.Select(body => body.Position)
+            .SequenceEqual(baseline.Bodies.Select(body => body.Position)) &&
+        profiled.Bodies.Select(body => body.Velocity)
+            .SequenceEqual(baseline.Bodies.Select(body => body.Velocity)),
+        "Enabling a profiling frame must not alter deterministic physics state.");
+    Require(profiled.Performance.PhysicsStepsThisFrame == 1 &&
+        profiled.Performance.PhysicsRunsOnMainThread &&
+        !profiled.Performance.UsesParallelPhysics,
+        "The profiler must report the current single-threaded fixed step.");
+    Require(profiled.Performance.Metric(PerformancePhase.PhysicsTotal).CurrentMilliseconds > 0.0 &&
+        profiled.Performance.Metric(PerformancePhase.Gravity).CurrentMilliseconds > 0.0 &&
+        profiled.Performance.Metric(PerformancePhase.Integration).CurrentMilliseconds > 0.0,
+        "Whole physics, gravity, and integration phases must be measured.");
+
+    var aggregationWorld = new PhysicsWorld4D(fixedDeltaTime: 0.01);
+    aggregationWorld.SetGravity(Vector4D.Zero);
+    aggregationWorld.SetCollisionsEnabled(false);
+    aggregationWorld.SetMutualGravityEnabled(false);
+    aggregationWorld.SetAggregationEnabled(true);
+    aggregationWorld.ReplaceBodies([
+        new PhysicsBodyInitialState4D(Vector4D.Zero, Vector4D.Zero, 1.0, 0.2),
+        new PhysicsBodyInitialState4D(new Vector4D(0.1, 0.0, 0.0, 0.0), Vector4D.Zero, 2.0, 0.2)
+    ]);
+    aggregationWorld.Performance.BeginFrame(
+        0.01,
+        aggregationWorld.FixedDeltaTime,
+        aggregationWorld.TimeScale);
+    aggregationWorld.StepOnce();
+    aggregationWorld.Performance.CompleteFrame(0.0, 100.0);
+    Require(aggregationWorld.Performance.CollisionCandidatesThisFrame > 0 &&
+        aggregationWorld.Performance.MergesThisFrame == 1 &&
+        aggregationWorld.Bodies.Count == 1,
+        "Candidate and merge counters must describe aggregation without changing its result.");
+
+    var rolling = new PerformanceProfiler(rollingWindowSize: 3);
+    for (var index = 0; index < 5; index++)
+    {
+        rolling.BeginFrame(0.016, 0.01, 1.0);
+        var startedAt = rolling.BeginPhase();
+        System.Threading.Thread.SpinWait(200);
+        rolling.EndPhase(PerformancePhase.UiUpdate, startedAt);
+        rolling.CompleteFrame(0.005, 60.0);
+    }
+    Require(rolling.Metric(PerformancePhase.UiUpdate).SampleCount == 3,
+        "Rolling profiler history must remain bounded by its configured capacity.");
+}
+
+static void ConfigureProfiledComparisonWorld(
+    PhysicsWorld4D world,
+    IReadOnlyList<PhysicsBodyInitialState4D> states)
+{
+    world.SetGravity(Vector4D.Zero);
+    world.SetCollisionsEnabled(false);
+    world.SetAggregationEnabled(false);
+    world.SetGravityMode(GravityMode4D.Exact);
+    world.ReplaceBodies(states);
+    world.SetMutualGravityEnabled(true);
+}
+
+static void RunNBodyProfilingReport()
+{
+    Console.WriteLine("N-BODY CPU PHASE PROFILE (3 bounded samples per scenario)");
+    Console.WriteLine("Render/GPU timings require the running MonoGame application and are not faked here.");
+    int[] counts = [500, 2_000, 20_000];
+    GravityMode4D[] requestedModes = [GravityMode4D.Exact, GravityMode4D.MeanFieldApproximate];
+    bool[] aggregationStates = [false, true];
+
+    foreach (var count in counts)
+    {
+        foreach (var requestedMode in requestedModes)
+        {
+            foreach (var aggregationEnabled in aggregationStates)
+            {
+                ProfileNBodyScenario(count, requestedMode, aggregationEnabled);
+            }
+        }
+    }
+}
+
+static void ProfileNBodyScenario(
+    int bodyCount,
+    GravityMode4D requestedMode,
+    bool aggregationEnabled)
+{
+    var world = new PhysicsWorld4D();
+    var lab = new NBodyLab4D(world);
+    lab.Settings.TryApplyBodyCount(bodyCount.ToString(), out _);
+    lab.SetGravityMode(requestedMode);
+    if (!aggregationEnabled)
+    {
+        lab.ToggleAggregation();
+    }
+    Require(lab.GenerateSystem(), $"Could not generate profiling scenario N={bodyCount:N0}.");
+
+    // Warm the same code paths, then recreate the deterministic initial state.
+    var stepsPerSample = NBodyLab4D.RecommendedCollisionInterval(bodyCount);
+    for (var step = 0; step < stepsPerSample; step++)
+    {
+        world.StepOnce();
+    }
+    lab.ResetSystem();
+    world.Performance.Reset();
+
+    const int sampleCount = 3;
+    for (var sample = 0; sample < sampleCount; sample++)
+    {
+        world.Performance.BeginFrame(
+            world.FixedDeltaTime * stepsPerSample,
+            world.FixedDeltaTime,
+            world.TimeScale);
+        for (var step = 0; step < stepsPerSample; step++)
+        {
+            world.StepOnce();
+        }
+        world.Performance.CompleteFrame(
+            world.AccumulatedSimulationTime,
+            simulationStepsPerSecond: 0.0);
+    }
+
+    var divisor = stepsPerSample;
+    double AveragePerStep(PerformancePhase phase) =>
+        world.Performance.Metric(phase).AverageMilliseconds / divisor;
+    var physics = AveragePerStep(PerformancePhase.PhysicsTotal);
+    var particleProjectionPreparation = MeasureParticleProjectionPreparation(world.Bodies);
+    var cpuStepsPerSecond = physics <= 0.0 ? 0.0 : 1000.0 / physics;
+    Console.WriteLine(
+        $"PROFILE: N={bodyCount,6:N0} requested={requestedMode,-20} " +
+        $"effective={world.EffectiveGravityMode,-20} aggregation={(aggregationEnabled ? "ON " : "OFF")} " +
+        $"physics={physics,8:0.000} gravity={AveragePerStep(PerformancePhase.Gravity),8:0.000} " +
+        $"collision={AveragePerStep(PerformancePhase.CollisionDetection),8:0.000} " +
+        $"merge={AveragePerStep(PerformancePhase.Aggregation),8:0.000} " +
+        $"integrate={AveragePerStep(PerformancePhase.Integration),8:0.000} " +
+        $"trail={AveragePerStep(PerformancePhase.TrailUpdate),7:0.000} ms " +
+        $"particlePrep={particleProjectionPreparation,7:0.000} ms " +
+        $"candidates={world.Performance.CollisionCandidatesThisFrame,9:N0} " +
+        $"merges={world.Performance.MergesThisFrame,5:N0} cpuStep/s={cpuStepsPerSecond,8:0.0}");
+}
+
+static double MeasureParticleProjectionPreparation(IReadOnlyList<PhysicsBody4D> bodies)
+{
+    var positions = new List<Vector4D>(bodies.Count);
+    var pipeline = new WireframeProjectionPipeline4D();
+    var transform = new Transform4D();
+    var camera = new Camera4D();
+    var projector = new PerspectiveProjector4D();
+    var performance = new PerformanceProfiler(rollingWindowSize: 3);
+    Wireframe3D? projected = null;
+    foreach (var body in bodies)
+    {
+        positions.Add(body.Position);
+    }
+    _ = pipeline.Project(
+        positions,
+        Array.Empty<Edge>(),
+        transform,
+        camera,
+        projector);
+    for (var sample = 0; sample < 3; sample++)
+    {
+        performance.BeginFrame(1.0 / 60.0, 1.0 / 60.0, 1.0);
+        var startedAt = performance.BeginPhase();
+        positions.Clear();
+        foreach (var body in bodies)
+        {
+            positions.Add(body.Position);
+        }
+        projected = pipeline.Project(
+            positions,
+            Array.Empty<Edge>(),
+            transform,
+            camera,
+            projector);
+        performance.EndPhase(PerformancePhase.RenderingPreparation, startedAt);
+        performance.CompleteFrame(0.0, 0.0);
+    }
+
+    Require(projected?.Vertices.Count == bodies.Count,
+        "Profiled particle projection must retain one projected vertex per 4D body.");
+    return performance.Metric(PerformancePhase.RenderingPreparation).AverageMilliseconds;
+}
+
+static void CheckNBodyLabLifecycle()
+{
+    var world = new PhysicsWorld4D();
+    var lab = new NBodyLab4D(world);
+    lab.Settings.TryApplyBodyCount("10", out _);
+    Require(lab.GenerateSystem(), "The default N-body cloud must generate successfully.");
+    var initial = world.Bodies.Select(body =>
+        new PhysicsBodyInitialState4D(body.Position, body.Velocity, body.Mass, body.Radius)).ToArray();
+    Require(world.IsPaused && world.MutualGravityEnabled && world.AggregationEnabled,
+        "A generated experiment must start paused with default gravity and aggregation ON.");
+    RequireNear(world.GravitySystem.GravitationalConstant, 0.060, 1e-12,
+        "N-body default G mismatch.");
+    RequireNear(world.GravitySystem.Softening, 0.25, 1e-12,
+        "N-body default softening mismatch.");
+    Require(lab.TrailMode == NBodyTrailMode4D.Off,
+        "Per-body trail storage must be OFF by default.");
+
+    lab.SetGravityMode(GravityMode4D.MeanFieldApproximate);
+    lab.ToggleGravity();
+    lab.ToggleAggregation();
+    lab.ResetSystem();
+    var reset = world.Bodies.Select(body =>
+        new PhysicsBodyInitialState4D(body.Position, body.Velocity, body.Mass, body.Radius)).ToArray();
+    Require(initial.SequenceEqual(reset),
+        "RESET with the same seed and generation settings must recreate identical conditions.");
+    Require(!world.MutualGravityEnabled && !world.AggregationEnabled &&
+        world.RequestedGravityMode == GravityMode4D.MeanFieldApproximate,
+        "RESET must preserve the selected simulation toggles and quality mode.");
+}
+
+static IReadOnlyList<PhysicsBodyInitialState4D> CreateSeparatedStates(int count)
+{
+    var states = new PhysicsBodyInitialState4D[count];
+    for (var index = 0; index < count; index++)
+    {
+        states[index] = new PhysicsBodyInitialState4D(
+            new Vector4D(index * 0.5, (index % 7) * 0.7, (index % 11) * 0.9, (index % 13) * 1.1),
+            Vector4D.Zero,
+            1.0,
+            0.01);
+    }
+
+    return states;
+}
+
+static (double MinimumDistance, double MaximumDistance, double FinalDistance, double FinalW, bool IsFinite)
+    SimulateGravityLab(double yVelocity, double wVelocity, int stepCount)
+{
+    var world = new PhysicsWorld4D();
+    var lab = new GravityLab4D(world);
+    lab.SetVelocityPreset(yVelocity);
+    if (wVelocity != 0.0)
+    {
+        lab.AdjustOrbiterInitialVelocity(new Vector4D(0.0, 0.0, 0.0, wVelocity));
+    }
+
+    lab.ResetExperiment();
+    var minimumDistance = lab.Diagnostics.Distance;
+    var maximumDistance = minimumDistance;
+    var isFinite = true;
+    for (var step = 0; step < stepCount; step++)
+    {
+        world.StepOnce();
+        var distance = lab.Diagnostics.Distance;
+        minimumDistance = Math.Min(minimumDistance, distance);
+        maximumDistance = Math.Max(maximumDistance, distance);
+        isFinite &= lab.Orbiter!.Position.IsFinite && lab.Orbiter.Velocity.IsFinite &&
+            double.IsFinite(distance);
+    }
+
+    return (
+        minimumDistance,
+        maximumDistance,
+        lab.Diagnostics.Distance,
+        lab.Orbiter!.Position.W,
+        isFinite);
+}
+
 static MouseState MouseAt(
     int x,
     int y,
@@ -1051,6 +2210,18 @@ static void Require(bool condition, string message)
     {
         throw new InvalidOperationException(message);
     }
+}
+
+static void RequireQuaternionNear(
+    Quaternion4D actual,
+    Quaternion4D expected,
+    double tolerance,
+    string message)
+{
+    RequireNear(actual.A, expected.A, tolerance, $"{message} A mismatch.");
+    RequireNear(actual.B, expected.B, tolerance, $"{message} B mismatch.");
+    RequireNear(actual.C, expected.C, tolerance, $"{message} C mismatch.");
+    RequireNear(actual.D, expected.D, tolerance, $"{message} D mismatch.");
 }
 
 static void RequireThrows<TException>(Action action, string message)

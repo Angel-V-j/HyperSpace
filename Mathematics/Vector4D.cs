@@ -17,6 +17,12 @@ public readonly record struct Vector4D(double X, double Y, double Z, double W)
 
     public double Length => System.Math.Sqrt(LengthSquared);
 
+    public static double Dot(Vector4D left, Vector4D right) =>
+        (left.X * right.X) +
+        (left.Y * right.Y) +
+        (left.Z * right.Z) +
+        (left.W * right.W);
+
     public static Vector4D operator +(Vector4D left, Vector4D right) =>
         new(
             left.X + right.X,
@@ -37,4 +43,6 @@ public readonly record struct Vector4D(double X, double Y, double Z, double W)
             vector.Y * scalar,
             vector.Z * scalar,
             vector.W * scalar);
+
+    public static Vector4D operator *(double scalar, Vector4D vector) => vector * scalar;
 }

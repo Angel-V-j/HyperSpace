@@ -9,5 +9,6 @@ public enum GeometryVisualStyle4D
     Hypersphere,
     Simplex,
     Irregular,
-    Spiral
+    Spiral,
+    Fractal
 }

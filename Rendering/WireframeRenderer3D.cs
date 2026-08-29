@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using HyperSpace.Geometry;
 using HyperSpace.Mathematics;
+using HyperSpace.Physics;
 using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Graphics;
 
@@ -190,6 +191,267 @@ public sealed class WireframeRenderer3D : IDisposable
                 vertexOffset: 0,
                 primitiveCount: writtenVertexCount / 3);
         }
+    }
+
+    public void DrawFractalPoints(
+        GraphicsDevice graphicsDevice,
+        Wireframe3D wireframe,
+        QuaternionJuliaSet4D fractal,
+        OrbitCamera3D camera,
+        FractalVisualizationSettings settings)
+    {
+        if (fractal.Samples.Count == 0)
+        {
+            return;
+        }
+
+        const int verticesPerMarker = 6;
+        EnsureTriangleVertexCapacity(fractal.Samples.Count * verticesPerMarker);
+        var maximumW = FindMaximumFractalWorldW(
+            wireframe,
+            fractal,
+            settings);
+        CreateBillboardAxes(
+            camera,
+            0.0045f * settings.PointSize,
+            out var right,
+            out var up);
+
+        var writtenVertexCount = 0;
+        for (var index = 0; index < fractal.Samples.Count; index++)
+        {
+            var sample = fractal.Samples[index];
+            if (!IsFractalSampleIncluded(sample, fractal.Parameters, settings))
+            {
+                continue;
+            }
+
+            var projected = wireframe.Vertices[index];
+            if (!projected.IsVisible || !TryConvert(projected.Position, out var center))
+            {
+                continue;
+            }
+
+            var color = FractalPointColor(sample, projected, fractal.Parameters, settings, maximumW);
+            WriteBillboard(center, right, up, color, ref writtenVertexCount);
+        }
+
+        if (writtenVertexCount == 0)
+        {
+            return;
+        }
+
+        graphicsDevice.BlendState = BlendState.Opaque;
+        graphicsDevice.DepthStencilState = DepthStencilState.Default;
+        graphicsDevice.RasterizerState = RasterizerState.CullNone;
+        ApplyCamera(graphicsDevice, camera);
+
+        foreach (var pass in _effect.CurrentTechnique.Passes)
+        {
+            pass.Apply();
+            graphicsDevice.DrawUserPrimitives(
+                PrimitiveType.TriangleList,
+                _triangleVertices,
+                vertexOffset: 0,
+                primitiveCount: writtenVertexCount / 3);
+        }
+    }
+
+    public void DrawPhysicsParticles(
+        GraphicsDevice graphicsDevice,
+        Wireframe3D wireframe,
+        IReadOnlyList<PhysicsBody4D> bodies,
+        PhysicsBody4D? selectedBody,
+        PhysicsBody4D? centralBody,
+        PhysicsBody4D? orbiter,
+        OrbitCamera3D camera,
+        bool nBodyMode = false,
+        NBodyColorMode4D nBodyColorMode = NBodyColorMode4D.WDepth,
+        double pointScale = 1.0)
+    {
+        var count = Math.Min(wireframe.Vertices.Count, bodies.Count);
+        if (count == 0)
+        {
+            return;
+        }
+
+        EnsureTriangleVertexCapacity(count * 6);
+        var maximumMass = 0.0;
+        var maximumSpeed = 0.0;
+        var maximumW = 0.0;
+        if (nBodyMode)
+        {
+            for (var index = 0; index < count; index++)
+            {
+                maximumMass = Math.Max(maximumMass, bodies[index].Mass);
+                maximumSpeed = Math.Max(maximumSpeed, bodies[index].Velocity.Length);
+                maximumW = Math.Max(maximumW, Math.Abs(bodies[index].Position.W));
+            }
+        }
+        CreateBillboardUnitAxes(camera, out var unitRight, out var unitUp);
+        var writtenVertexCount = 0;
+        for (var index = 0; index < count; index++)
+        {
+            var projected = wireframe.Vertices[index];
+            if (!projected.IsVisible || !TryConvert(projected.Position, out var center))
+            {
+                continue;
+            }
+
+            var body = bodies[index];
+            var isCentralBody = ReferenceEquals(body, centralBody);
+            var isOrbiter = ReferenceEquals(body, orbiter);
+            var radius = isCentralBody
+                ? 0.052f
+                : isOrbiter
+                    ? 0.027f
+                    : nBodyMode
+                        ? NBodyMarkerRadius(body, pointScale)
+                        : 0.018f;
+            if (nBodyMode && selectedBody?.Id == body.Id)
+            {
+                radius *= 1.8f;
+            }
+            var right = unitRight * radius;
+            var up = unitUp * radius;
+            var color = isCentralBody
+                ? VisualizationPalette.GravityCentralMass
+                : isOrbiter
+                    ? VisualizationPalette.GravityOrbiter
+                    : selectedBody?.Id == body.Id
+                        ? VisualizationPalette.PhysicsParticleSelected
+                        : nBodyMode
+                            ? NBodyParticleColor(body, nBodyColorMode, maximumMass, maximumSpeed, maximumW)
+                            : PhysicsParticleColor(projected.WorldW);
+            WriteBillboard(center, right, up, color, ref writtenVertexCount);
+        }
+
+        if (writtenVertexCount == 0)
+        {
+            return;
+        }
+
+        graphicsDevice.BlendState = BlendState.Opaque;
+        graphicsDevice.DepthStencilState = DepthStencilState.Default;
+        graphicsDevice.RasterizerState = RasterizerState.CullNone;
+        ApplyCamera(graphicsDevice, camera);
+
+        foreach (var pass in _effect.CurrentTechnique.Passes)
+        {
+            pass.Apply();
+            graphicsDevice.DrawUserPrimitives(
+                PrimitiveType.TriangleList,
+                _triangleVertices,
+                vertexOffset: 0,
+                primitiveCount: writtenVertexCount / 3);
+        }
+    }
+
+    internal static float NBodyMarkerRadius(PhysicsBody4D body, double pointScale) =>
+        (float)Math.Clamp(body.Radius * 0.12 * pointScale, 0.004, 0.07);
+
+    public void DrawPhysicsHyperplane(
+        GraphicsDevice graphicsDevice,
+        Wireframe3D wireframe,
+        OrbitCamera3D camera)
+    {
+        EnsureVertexCapacity(wireframe.Edges.Count * 2);
+        var writtenVertexCount = 0;
+        foreach (var edge in wireframe.Edges)
+        {
+            var start = wireframe.Vertices[edge.Start];
+            var end = wireframe.Vertices[edge.End];
+            if (!start.IsVisible || !end.IsVisible ||
+                !TryConvert(start.Position, out var startPosition) ||
+                !TryConvert(end.Position, out var endPosition))
+            {
+                continue;
+            }
+
+            _lineVertices[writtenVertexCount++] =
+                new VertexPositionColor(startPosition, VisualizationPalette.PhysicsPlane);
+            _lineVertices[writtenVertexCount++] =
+                new VertexPositionColor(endPosition, VisualizationPalette.PhysicsPlane);
+        }
+
+        if (writtenVertexCount == 0)
+        {
+            return;
+        }
+
+        graphicsDevice.BlendState = BlendState.NonPremultiplied;
+        graphicsDevice.DepthStencilState = DepthStencilState.DepthRead;
+        graphicsDevice.RasterizerState = RasterizerState.CullNone;
+        ApplyCamera(graphicsDevice, camera);
+
+        foreach (var pass in _effect.CurrentTechnique.Passes)
+        {
+            pass.Apply();
+            graphicsDevice.DrawUserPrimitives(
+                PrimitiveType.LineList,
+                _lineVertices,
+                vertexOffset: 0,
+                primitiveCount: writtenVertexCount / 2);
+        }
+    }
+
+    public void DrawGravityTrail(
+        GraphicsDevice graphicsDevice,
+        Wireframe3D wireframe,
+        OrbitCamera3D camera)
+    {
+        EnsureVertexCapacity(wireframe.Edges.Count * 2);
+        var writtenVertexCount = 0;
+        foreach (var edge in wireframe.Edges)
+        {
+            var start = wireframe.Vertices[edge.Start];
+            var end = wireframe.Vertices[edge.End];
+            if (!start.IsVisible || !end.IsVisible ||
+                !TryConvert(start.Position, out var startPosition) ||
+                !TryConvert(end.Position, out var endPosition))
+            {
+                continue;
+            }
+
+            _lineVertices[writtenVertexCount++] = new VertexPositionColor(
+                startPosition,
+                VisualizationPalette.GravityTrailWColor(start.WorldW));
+            _lineVertices[writtenVertexCount++] = new VertexPositionColor(
+                endPosition,
+                VisualizationPalette.GravityTrailWColor(end.WorldW));
+        }
+
+        DrawLineVertices(graphicsDevice, camera, writtenVertexCount, BlendState.Opaque);
+    }
+
+    public void DrawGravityFieldLink(
+        GraphicsDevice graphicsDevice,
+        Wireframe3D wireframe,
+        OrbitCamera3D camera)
+    {
+        if (wireframe.Edges.Count == 0)
+        {
+            return;
+        }
+
+        var edge = wireframe.Edges[0];
+        var start = wireframe.Vertices[edge.Start];
+        var end = wireframe.Vertices[edge.End];
+        if (!start.IsVisible || !end.IsVisible ||
+            !TryConvert(start.Position, out var startPosition) ||
+            !TryConvert(end.Position, out var endPosition))
+        {
+            return;
+        }
+
+        EnsureVertexCapacity(2);
+        _lineVertices[0] = new VertexPositionColor(
+            startPosition,
+            VisualizationPalette.GravityCentralMass);
+        _lineVertices[1] = new VertexPositionColor(
+            endPosition,
+            VisualizationPalette.GravityField);
+        DrawLineVertices(graphicsDevice, camera, 2, BlendState.Opaque);
     }
 
     public void DrawCurveDirectionMarkers(
@@ -607,6 +869,183 @@ public sealed class WireframeRenderer3D : IDisposable
         _triangleVertices[index++] = new VertexPositionColor(a, color);
         _triangleVertices[index++] = new VertexPositionColor(b, color);
         _triangleVertices[index++] = new VertexPositionColor(c, color);
+    }
+
+    private void WriteBillboard(
+        Vector3 center,
+        Vector3 right,
+        Vector3 up,
+        Color color,
+        ref int index)
+    {
+        var topLeft = center - right + up;
+        var topRight = center + right + up;
+        var bottomLeft = center - right - up;
+        var bottomRight = center + right - up;
+
+        WriteTriangle(topLeft, bottomLeft, topRight, color, ref index);
+        WriteTriangle(topRight, bottomLeft, bottomRight, color, ref index);
+    }
+
+    private static bool IsFractalSampleIncluded(
+        FractalSample4D sample,
+        JuliaParameters parameters,
+        FractalVisualizationSettings settings) =>
+        !settings.ShowWSlice ||
+        Math.Abs(sample.Position.W - settings.SliceW) <=
+            (parameters.GridSpacing * 0.51);
+
+    private static double FindMaximumFractalWorldW(
+        Wireframe3D wireframe,
+        QuaternionJuliaSet4D fractal,
+        FractalVisualizationSettings settings)
+    {
+        var maximumMagnitude = 0.0;
+        for (var index = 0; index < fractal.Samples.Count; index++)
+        {
+            if (!IsFractalSampleIncluded(fractal.Samples[index], fractal.Parameters, settings))
+            {
+                continue;
+            }
+
+            var projected = wireframe.Vertices[index];
+            if (projected.IsVisible && double.IsFinite(projected.WorldW))
+            {
+                maximumMagnitude = Math.Max(maximumMagnitude, Math.Abs(projected.WorldW));
+            }
+        }
+
+        return maximumMagnitude;
+    }
+
+    private static Color FractalPointColor(
+        FractalSample4D sample,
+        ProjectedVertex3D projected,
+        JuliaParameters parameters,
+        FractalVisualizationSettings settings,
+        double maximumW)
+    {
+        var normalizedIterations = (float)Math.Clamp(
+            (double)sample.Iterations / parameters.MaxIterations,
+            0.0,
+            1.0);
+
+        if (settings.ColorMode == FractalColorMode.EscapeIterations)
+        {
+            return sample.IsBounded
+                ? VisualizationPalette.FractalBounded
+                : Color.Lerp(
+                    VisualizationPalette.FractalFastEscape,
+                    VisualizationPalette.FractalSlowEscape,
+                    normalizedIterations);
+        }
+
+        var normalizedW = maximumW > 1e-12
+            ? projected.WorldW / maximumW
+            : 0.0;
+        var baseColor = VisualizationPalette.FractalWDepthColor(normalizedW);
+        var wIntensity = 0.38f + (0.62f * (float)Math.Abs(normalizedW));
+        var membershipIntensity = sample.IsBounded
+            ? 1.0f
+            : 0.12f + (0.58f * normalizedIterations);
+        return ScaleRgb(baseColor, wIntensity * membershipIntensity);
+    }
+
+    private static Color ScaleRgb(Color color, float amount)
+    {
+        var clamped = Math.Clamp(amount, 0.0f, 1.0f);
+        return new Color(
+            (byte)Math.Round(color.R * clamped),
+            (byte)Math.Round(color.G * clamped),
+            (byte)Math.Round(color.B * clamped),
+            byte.MaxValue);
+    }
+
+    private static Color PhysicsParticleColor(double worldW)
+    {
+        var amount = (float)Math.Clamp(0.5 + (worldW / 8.0), 0.0, 1.0);
+        return Color.Lerp(
+            VisualizationPalette.PhysicsParticleNegativeW,
+            VisualizationPalette.PhysicsParticlePositiveW,
+            amount);
+    }
+
+    private static Color NBodyParticleColor(
+        PhysicsBody4D body,
+        NBodyColorMode4D mode,
+        double maximumMass,
+        double maximumSpeed,
+        double maximumW)
+    {
+        if (mode == NBodyColorMode4D.WDepth)
+        {
+            var normalized = maximumW > 1e-12 ? body.Position.W / maximumW : 0.0;
+            return Color.Lerp(
+                VisualizationPalette.PhysicsParticleNegativeW,
+                VisualizationPalette.PhysicsParticlePositiveW,
+                (float)Math.Clamp(0.5 + (0.5 * normalized), 0.0, 1.0));
+        }
+
+        var amount = mode == NBodyColorMode4D.Mass
+            ? maximumMass > 1e-12 ? Math.Sqrt(body.Mass / maximumMass) : 0.0
+            : maximumSpeed > 1e-12 ? body.Velocity.Length / maximumSpeed : 0.0;
+        return mode == NBodyColorMode4D.Mass
+            ? Color.Lerp(new Color(69, 132, 214), new Color(255, 210, 74), (float)amount)
+            : Color.Lerp(new Color(86, 215, 167), new Color(255, 91, 119), (float)amount);
+    }
+
+    private void DrawLineVertices(
+        GraphicsDevice graphicsDevice,
+        OrbitCamera3D camera,
+        int writtenVertexCount,
+        BlendState blendState)
+    {
+        if (writtenVertexCount == 0)
+        {
+            return;
+        }
+
+        graphicsDevice.BlendState = blendState;
+        graphicsDevice.DepthStencilState = DepthStencilState.DepthRead;
+        graphicsDevice.RasterizerState = RasterizerState.CullNone;
+        ApplyCamera(graphicsDevice, camera);
+
+        foreach (var pass in _effect.CurrentTechnique.Passes)
+        {
+            pass.Apply();
+            graphicsDevice.DrawUserPrimitives(
+                PrimitiveType.LineList,
+                _lineVertices,
+                vertexOffset: 0,
+                primitiveCount: writtenVertexCount / 2);
+        }
+    }
+
+    private static void CreateBillboardAxes(
+        OrbitCamera3D camera,
+        float radius,
+        out Vector3 right,
+        out Vector3 up)
+    {
+        var inverseView = Matrix.Invert(camera.View);
+        right = Vector3.Normalize(new Vector3(
+            inverseView.M11,
+            inverseView.M12,
+            inverseView.M13)) * radius;
+        up = Vector3.Normalize(new Vector3(
+            inverseView.M21,
+            inverseView.M22,
+            inverseView.M23)) * radius;
+    }
+
+    private static void CreateBillboardUnitAxes(
+        OrbitCamera3D camera,
+        out Vector3 right,
+        out Vector3 up)
+    {
+        var inverseView = Matrix.Invert(camera.View);
+        right = Vector3.Normalize(new Vector3(inverseView.M11, inverseView.M12, inverseView.M13));
+        up = Vector3.Normalize(new Vector3(inverseView.M21, inverseView.M22, inverseView.M23));
     }
 
     private void WriteCube(Vector3 center, Color color, float radius, ref int index)

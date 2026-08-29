@@ -38,6 +38,22 @@ public static class VisualizationPalette
     public static readonly Color IrregularPositiveW = new(245, 103, 122);
     public static readonly Color SpiralNegativeW = new(50, 211, 255);
     public static readonly Color SpiralPositiveW = new(255, 88, 190);
+    public static readonly Color FractalNegativeW = new(55, 190, 255);
+    public static readonly Color FractalZeroW = new(198, 218, 255);
+    public static readonly Color FractalPositiveW = new(255, 80, 174);
+    public static readonly Color FractalFastEscape = new(35, 64, 125);
+    public static readonly Color FractalSlowEscape = new(255, 182, 74);
+    public static readonly Color FractalBounded = new(244, 230, 255);
+    public static readonly Color PhysicsParticleNegativeW = new(78, 205, 255);
+    public static readonly Color PhysicsParticlePositiveW = new(255, 111, 187);
+    public static readonly Color PhysicsParticleSelected = new(255, 224, 92);
+    public static readonly Color PhysicsPlane = new(108, 225, 190, 72);
+    public static readonly Color GravityCentralMass = new(255, 142, 72);
+    public static readonly Color GravityOrbiter = new(255, 232, 112);
+    public static readonly Color GravityField = new(255, 176, 84);
+    public static readonly Color GravityTrailNegativeW = new(66, 196, 255);
+    public static readonly Color GravityTrailZeroW = new(216, 231, 255);
+    public static readonly Color GravityTrailPositiveW = new(255, 79, 181);
     public static readonly Color CurveStart = new(91, 232, 139);
     public static readonly Color CurveEnd = new(255, 207, 82);
 
@@ -53,6 +69,9 @@ public static class VisualizationPalette
     public static readonly Color DisplayAccent = new(174, 128, 224);
     public static readonly Color ObjectInfoAccent = new(90, 145, 210);
     public static readonly Color CurveAccent = new(58, 205, 210);
+    public static readonly Color FractalAccent = new(224, 102, 191);
+    public static readonly Color PhysicsAccent = new(91, 220, 164);
+    public static readonly Color GravityLabAccent = new(255, 166, 82);
 
     public static int CellColorCount => Cells.Length;
 
@@ -89,5 +108,22 @@ public static class VisualizationPalette
         };
 
         return Color.Lerp(negative, positive, amount);
+    }
+
+    public static Color FractalWDepthColor(double normalizedW)
+    {
+        var clamped = (float)System.Math.Clamp(normalizedW, -1.0, 1.0);
+        return clamped < 0.0f
+            ? Color.Lerp(FractalZeroW, FractalNegativeW, -clamped)
+            : Color.Lerp(FractalZeroW, FractalPositiveW, clamped);
+    }
+
+    public static Color GravityTrailWColor(double worldW)
+    {
+        const double fullGradientDistance = 3.0;
+        var normalized = (float)System.Math.Clamp(worldW / fullGradientDistance, -1.0, 1.0);
+        return normalized < 0.0f
+            ? Color.Lerp(GravityTrailZeroW, GravityTrailNegativeW, -normalized)
+            : Color.Lerp(GravityTrailZeroW, GravityTrailPositiveW, normalized);
     }
 }
