@@ -50,11 +50,13 @@ public sealed class SandboxGame : Game
     private readonly NBodyLab4D _nBodyLab;
     private readonly PhysicsCommandController _physicsCommands;
     private readonly PhysicsProjectionCache4D _physicsProjection;
+    private readonly Func<Wireframe3D> _prepareParticleProjection;
 
     private int _selectedObjectIndex;
     private Wireframe3D _objectWireframe3D;
     private Wireframe3D _referenceGridWireframe3D;
     private WireframeRenderer3D? _wireframeRenderer;
+    private NBodyGpuRenderer? _nBodyGpuRenderer;
     private DebugOverlayRenderer? _debugOverlay;
     private TransformationControlPanel? _controlPanel;
     private TransformationCommand? _activePanelCommand;
@@ -71,6 +73,7 @@ public sealed class SandboxGame : Game
             _projectionPipeline,
             _camera4D,
             _projector4D);
+        _prepareParticleProjection = () => _physicsProjection.UpdateParticles(_physicsWorld);
         var spiral = _spiralGenerator.Generate(_pendingSpiralParameters);
         _objects =
         [
@@ -97,12 +100,15 @@ public sealed class SandboxGame : Game
         _graphics = new GraphicsDeviceManager(this)
         {
             PreferredBackBufferWidth = 1280,
-            PreferredBackBufferHeight = 900,
+            PreferredBackBufferHeight = 930,
+            GraphicsProfile = GraphicsProfile.HiDef,
             SynchronizeWithVerticalRetrace = true
         };
 
         Content.RootDirectory = "Content";
-        IsFixedTimeStep = true;
+        // PhysicsWorld4D owns the fixed-step accumulator; a second MonoGame
+        // catch-up scheduler would otherwise run multiple expensive Updates before Draw.
+        IsFixedTimeStep = false;
         TargetElapsedTime = TimeSpan.FromSeconds(PhysicsWorld4D.DefaultFixedDeltaTime);
         IsMouseVisible = true;
         Window.AllowUserResizing = true;
@@ -125,6 +131,7 @@ public sealed class SandboxGame : Game
     {
         var debugFont = Content.Load<SpriteFont>("DebugFont");
         _wireframeRenderer = new WireframeRenderer3D(GraphicsDevice);
+        _nBodyGpuRenderer = new NBodyGpuRenderer(GraphicsDevice, Content.Load<Effect>("NBodyParticles"));
         _debugOverlay = new DebugOverlayRenderer(GraphicsDevice, debugFont);
         _controlPanel = new TransformationControlPanel(GraphicsDevice, debugFont);
     }
@@ -238,7 +245,9 @@ public sealed class SandboxGame : Game
             _referenceGridTransform,
             _camera4D,
             _projector4D);
-        _physicsProjection.Update(_physicsWorld, _gravityLab, _nBodyLab);
+        // N-body particles stay in 4D until the GPU vertex shader. A CPU projection
+        // is only requested for an actual selection click, not every rendered frame.
+        _physicsProjection.Update(_physicsWorld, _gravityLab, _nBodyLab, projectParticles: !isNBodyView);
         var selectedBody = _nBodySelection.Update(
             mouse,
             IsActive,
@@ -248,7 +257,8 @@ public sealed class SandboxGame : Game
             _physicsProjection.Particles,
             _physicsWorld.Bodies,
             _camera3D,
-            _nBodyLab.Settings.PointScale);
+            _nBodyLab.Settings.PointScale,
+            _prepareParticleProjection);
         if (selectedBody is not null)
         {
             _nBodyLab.SelectBody(selectedBody);
@@ -371,7 +381,21 @@ public sealed class SandboxGame : Game
                 _camera3D);
         }
 
-        _wireframeRenderer?.DrawPhysicsParticles(
+        if (isNBodyView)
+        {
+            _nBodyGpuRenderer?.Draw(
+                GraphicsDevice,
+                _physicsWorld.Bodies,
+                _physicsWorld.SelectedBody,
+                _camera4D,
+                _projector4D,
+                _camera3D,
+                _nBodyLab.ColorMode,
+                _nBodyLab.Settings.PointScale);
+        }
+        else
+        {
+            _wireframeRenderer?.DrawPhysicsParticles(
             GraphicsDevice,
             _physicsProjection.Particles,
             _physicsWorld.Bodies,
@@ -382,6 +406,7 @@ public sealed class SandboxGame : Game
             nBodyMode: _controlPanel?.IsNBodyLabView == true,
             nBodyColorMode: _nBodyLab.ColorMode,
             pointScale: _nBodyLab.Settings.PointScale);
+        }
         if (isNBodyView)
         {
             performance.EndPhase(
@@ -443,6 +468,7 @@ public sealed class SandboxGame : Game
         _controlPanel?.Dispose();
         _debugOverlay?.Dispose();
         _wireframeRenderer?.Dispose();
+        _nBodyGpuRenderer?.Dispose();
         base.UnloadContent();
     }
 

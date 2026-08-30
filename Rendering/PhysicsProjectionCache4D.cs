@@ -19,7 +19,7 @@ internal sealed class PhysicsProjectionCache4D
     private readonly PerspectiveProjector4D _projector;
     private readonly HyperplaneGrid4D _hyperplaneGrid = new();
     private readonly Transform4D _transform = new();
-    private readonly List<Vector4D> _particlePositions = [];
+    private Vector4D[] _particlePositions = [];
     private readonly List<Edge> _gravityTrailEdges = [];
     private readonly List<Edge> _nBodyTrailEdges = [];
     private readonly List<Vector4D> _gravityFieldPoints = [];
@@ -55,13 +55,33 @@ internal sealed class PhysicsProjectionCache4D
     public void Update(
         PhysicsWorld4D world,
         GravityLab4D gravityLab,
-        NBodyLab4D nBodyLab)
+        NBodyLab4D nBodyLab,
+        bool projectParticles = true)
     {
-        _particlePositions.Clear();
-        foreach (var body in world.Bodies)
+        if (projectParticles)
         {
-            _particlePositions.Add(body.Position);
+            UpdateParticles(world);
         }
+        UpdateReferenceProjections(gravityLab, nBodyLab);
+    }
+
+    public Wireframe3D UpdateParticles(PhysicsWorld4D world)
+    {
+        if (_particlePositions.Length != world.Bodies.Count)
+        {
+            _particlePositions = new Vector4D[world.Bodies.Count];
+        }
+
+        HyperSpace.Diagnostics.ParallelWork.ForRanges(
+            world.Bodies.Count,
+            minimumItemsPerWorker: 2_048,
+            (_, start, end) =>
+            {
+                for (var index = start; index < end; index++)
+                {
+                    _particlePositions[index] = world.Bodies[index].Position;
+                }
+            });
 
         Particles = _pipeline.Project(
             _particlePositions,
@@ -69,6 +89,11 @@ internal sealed class PhysicsProjectionCache4D
             _transform,
             _camera,
             _projector);
+        return Particles;
+    }
+
+    private void UpdateReferenceProjections(GravityLab4D gravityLab, NBodyLab4D nBodyLab)
+    {
         Hyperplane = _pipeline.Project(
             _hyperplaneGrid.Vertices,
             _hyperplaneGrid.Edges,

@@ -180,9 +180,10 @@ internal static class TransformationControlCatalog
             new("MERGE ON", TransformationCommand.ToggleNBodyAggregation),
             new("EXACT", TransformationCommand.SelectNBodyExactGravity),
             new("MEAN FIELD", TransformationCommand.SelectNBodyApproximateGravity),
-            new("COLOR W", TransformationCommand.ColorNBodyByW),
-            new("COLOR MASS", TransformationCommand.ColorNBodyByMass),
-            new("COLOR SPEED", TransformationCommand.ColorNBodyBySpeed),
+            new("W DEPTH", TransformationCommand.ColorNBodyByW),
+            new("MASS", TransformationCommand.ColorNBodyByMass),
+            new("ACCEL", TransformationCommand.ColorNBodyByAcceleration),
+            new("SPEED", TransformationCommand.ColorNBodyBySpeed),
             new("TRAIL OFF", TransformationCommand.DisableNBodyTrail),
             new("SELECTED", TransformationCommand.EnableSelectedNBodyTrail)
 

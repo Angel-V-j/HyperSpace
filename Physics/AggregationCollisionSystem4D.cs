@@ -11,9 +11,20 @@ namespace HyperSpace.Physics;
 public sealed class AggregationCollisionSystem4D
 {
     private readonly SpatialHashGrid4D _grid = new();
-    private readonly List<int> _neighbors = [];
+    private readonly List<(int FirstIndex, int SecondIndex)> _candidatePairs = [];
+    private readonly CollisionPairSorter _pairSorter = new();
+    // Collision-only SoA snapshot: repeated candidate checks avoid pointer chasing
+    // through body objects. Serial merges update this snapshot immediately.
+    private double[] _positionX = [];
+    private double[] _positionY = [];
+    private double[] _positionZ = [];
+    private double[] _positionW = [];
+    private double[] _radii = [];
+    private bool[] _eligible = [];
+    private (double MaximumRadius, int Count)[] _workerBounds = [];
 
     public double RadiusScale { get; private set; } = 0.08;
+    public int LastCandidatePairCount { get; private set; }
 
     public void SetRadiusScale(double value)
     {
@@ -35,76 +46,80 @@ public sealed class AggregationCollisionSystem4D
         PerformanceProfiler? performance = null)
     {
         selectedSurvivor = selectedBody;
+        LastCandidatePairCount = 0;
         if (bodies.Count < 2)
         {
             return 0;
         }
 
         var collisionDetectionStartedAt = performance?.BeginPhase() ?? 0L;
-        var maximumRadius = 0.0;
-        foreach (var body in bodies)
+        var collisionGridStartedAt = performance?.BeginPhase() ?? 0L;
+        var (maximumRadius, eligibleBodyCount) = CaptureCollisionState(bodies);
+
+        if (eligibleBodyCount < 2)
         {
-            if (body.IsAlive)
-            {
-                maximumRadius = Math.Max(maximumRadius, body.Radius);
-            }
+            performance?.EndPhase(PerformancePhase.CollisionGrid, collisionGridStartedAt);
+            performance?.EndPhase(
+                PerformancePhase.CollisionDetection,
+                collisionDetectionStartedAt);
+            return 0;
         }
 
-        _grid.Reset(Math.Max(2.0 * maximumRadius, 1e-6));
-        for (var index = 0; index < bodies.Count; index++)
-        {
-            if (bodies[index].IsAlive)
-            {
-                _grid.Add(index, bodies[index].Position);
-            }
-        }
+        _grid.Build(bodies, _eligible, Math.Max(2.0 * maximumRadius, 1e-6));
+        performance?.EndPhase(PerformancePhase.CollisionGrid, collisionGridStartedAt);
 
         var collisionCount = 0;
         long candidateCount = 0;
-        for (var firstIndex = 0; firstIndex < bodies.Count; firstIndex++)
+        var candidatesStartedAt = performance?.BeginPhase() ?? 0L;
+        _grid.CollectCandidatePairs(_candidatePairs);
+        LastCandidatePairCount = _candidatePairs.Count;
+        performance?.RecordParallelWork(_grid.LastCandidateWorkerCount);
+        performance?.EndPhase(PerformancePhase.CollisionCandidates, candidatesStartedAt);
+        var sortStartedAt = performance?.BeginPhase() ?? 0L;
+        _pairSorter.Sort(_candidatePairs, bodies.Count);
+        performance?.EndPhase(PerformancePhase.CollisionSort, sortStartedAt);
+        var resolutionStartedAt = performance?.BeginPhase() ?? 0L;
+        foreach (var candidate in _candidatePairs)
         {
-            var first = bodies[firstIndex];
-            if (!first.IsAlive || first.IsStatic)
+            if (!_eligible[candidate.FirstIndex])
             {
                 continue;
             }
 
-            _grid.CollectNeighborIndices(first.Position, _neighbors);
-            _neighbors.Sort();
-            foreach (var secondIndex in _neighbors)
+            if (!_eligible[candidate.SecondIndex])
             {
-                if (secondIndex <= firstIndex || !first.IsAlive)
-                {
-                    continue;
-                }
-
-                var second = bodies[secondIndex];
-                if (!second.IsAlive || second.IsStatic)
-                {
-                    continue;
-                }
-
-                candidateCount++;
-                if (!AreOverlapping(first, second))
-                {
-                    continue;
-                }
-
-                performance?.EndPhase(
-                    PerformancePhase.CollisionDetection,
-                    collisionDetectionStartedAt);
-                var aggregationStartedAt = performance?.BeginPhase() ?? 0L;
-                var (survivor, absorbed) = Merge(first, second);
-                if (ReferenceEquals(selectedSurvivor, absorbed))
-                {
-                    selectedSurvivor = survivor;
-                }
-                collisionCount++;
-                performance?.EndPhase(PerformancePhase.Aggregation, aggregationStartedAt);
-                collisionDetectionStartedAt = performance?.BeginPhase() ?? 0L;
+                continue;
             }
+
+            candidateCount++;
+            if (!AreOverlapping(candidate.FirstIndex, candidate.SecondIndex))
+            {
+                continue;
+            }
+
+            performance?.EndPhase(PerformancePhase.CollisionResolution, resolutionStartedAt);
+            performance?.EndPhase(
+                PerformancePhase.CollisionDetection,
+                collisionDetectionStartedAt);
+            var aggregationStartedAt = performance?.BeginPhase() ?? 0L;
+            var first = bodies[candidate.FirstIndex];
+            var second = bodies[candidate.SecondIndex];
+            var (survivor, absorbed) = Merge(first, second);
+            var survivorIndex = ReferenceEquals(survivor, first) ? candidate.FirstIndex : candidate.SecondIndex;
+            var absorbedIndex = survivorIndex == candidate.FirstIndex ? candidate.SecondIndex : candidate.FirstIndex;
+            CaptureBody(survivorIndex, survivor);
+            _eligible[absorbedIndex] = false;
+            if (ReferenceEquals(selectedSurvivor, absorbed))
+            {
+                selectedSurvivor = survivor;
+            }
+            collisionCount++;
+            performance?.EndPhase(PerformancePhase.Aggregation, aggregationStartedAt);
+            collisionDetectionStartedAt = performance?.BeginPhase() ?? 0L;
+            resolutionStartedAt = performance?.BeginPhase() ?? 0L;
         }
 
+        performance?.EndPhase(PerformancePhase.CollisionResolution, resolutionStartedAt);
         performance?.EndPhase(
             PerformancePhase.CollisionDetection,
             collisionDetectionStartedAt);
@@ -125,10 +140,64 @@ public sealed class AggregationCollisionSystem4D
         return radiusScale * Math.Pow(mass, 0.25);
     }
 
-    private static bool AreOverlapping(PhysicsBody4D first, PhysicsBody4D second)
+    private bool AreOverlapping(int first, int second)
     {
-        var radiusSum = first.Radius + second.Radius;
-        return (second.Position - first.Position).LengthSquared <= radiusSum * radiusSum;
+        var radiusSum = _radii[first] + _radii[second];
+        var dx = _positionX[second] - _positionX[first];
+        var dy = _positionY[second] - _positionY[first];
+        var dz = _positionZ[second] - _positionZ[first];
+        var dw = _positionW[second] - _positionW[first];
+        return dx * dx + dy * dy + dz * dz + dw * dw <= radiusSum * radiusSum;
+    }
+
+    private (double MaximumRadius, int Count) CaptureCollisionState(IReadOnlyList<PhysicsBody4D> bodies)
+    {
+        if (_eligible.Length < bodies.Count)
+        {
+            var capacity = Math.Max(bodies.Count, _eligible.Length * 2);
+            _positionX = new double[capacity];
+            _positionY = new double[capacity];
+            _positionZ = new double[capacity];
+            _positionW = new double[capacity];
+            _radii = new double[capacity];
+            _eligible = new bool[capacity];
+        }
+        var workers = ParallelWork.WorkerCountFor(bodies.Count, 2_048);
+        if (_workerBounds.Length < workers) Array.Resize(ref _workerBounds, workers);
+        ParallelWork.ForRanges(bodies.Count, 2_048, (worker, start, end) =>
+        {
+            var maximum = 0.0;
+            var count = 0;
+            for (var index = start; index < end; index++)
+            {
+                var body = bodies[index];
+                CaptureBody(index, body);
+                if (_eligible[index])
+                {
+                    maximum = Math.Max(maximum, body.Radius);
+                    count++;
+                }
+            }
+            _workerBounds[worker] = (maximum, count);
+        });
+        var maximumRadius = 0.0;
+        var eligibleCount = 0;
+        for (var worker = 0; worker < workers; worker++)
+        {
+            maximumRadius = Math.Max(maximumRadius, _workerBounds[worker].MaximumRadius);
+            eligibleCount += _workerBounds[worker].Count;
+        }
+        return (maximumRadius, eligibleCount);
+    }
+
+    private void CaptureBody(int index, PhysicsBody4D body)
+    {
+        _positionX[index] = body.Position.X;
+        _positionY[index] = body.Position.Y;
+        _positionZ[index] = body.Position.Z;
+        _positionW[index] = body.Position.W;
+        _radii[index] = body.Radius;
+        _eligible[index] = body.IsAlive && !body.IsStatic;
     }
 
     private (PhysicsBody4D Survivor, PhysicsBody4D Absorbed) Merge(

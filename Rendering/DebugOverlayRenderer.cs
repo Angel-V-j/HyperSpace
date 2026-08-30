@@ -389,6 +389,10 @@ public sealed class DebugOverlayRenderer : IDisposable
         AppendPerformanceMetric("Physics total", performance, PerformancePhase.PhysicsTotal);
         AppendPerformanceMetric("  Gravity", performance, PerformancePhase.Gravity);
         AppendPerformanceMetric("  Collision", performance, PerformancePhase.CollisionDetection);
+        AppendPerformanceMetric("    Grid", performance, PerformancePhase.CollisionGrid);
+        AppendPerformanceMetric("    Candidates", performance, PerformancePhase.CollisionCandidates);
+        AppendPerformanceMetric("    Sort", performance, PerformancePhase.CollisionSort);
+        AppendPerformanceMetric("    Resolve", performance, PerformancePhase.CollisionResolution);
         AppendPerformanceMetric("  Aggregation", performance, PerformancePhase.Aggregation);
         AppendPerformanceMetric("  Integration", performance, PerformancePhase.Integration);
         AppendPerformanceMetric("  Trails", performance, PerformancePhase.TrailUpdate);
@@ -409,6 +413,10 @@ public sealed class DebugOverlayRenderer : IDisposable
             "Simulated {0:0.00} ms  accumulator {1:0.00} ms\n",
             performance.SimulatedSecondsThisFrame * 1000.0,
             performance.AccumulatedSimulationMilliseconds);
+        if (world.CatchUpLimitedLastUpdate)
+        {
+            _performanceText.Append("Catch-up CPU budget reached; fixed-step debt retained\n");
+        }
         _performanceText.AppendFormat(
             CultureInfo.InvariantCulture,
             "Fixed {0:0.000} ms  steps/frame {1}  real steps/sec {2:0.0}\n",
@@ -425,11 +433,11 @@ public sealed class DebugOverlayRenderer : IDisposable
             : "NOT SAMPLED";
         _performanceText.AppendFormat(
             CultureInfo.InvariantCulture,
-            "CPU logical {0}  physics thread {1}  parallel {2}\n",
+            "CPU logical {0}  coordinator {1}  parallel workers <= {2}\n",
             performance.LogicalProcessorCount,
             thread,
-            performance.UsesParallelPhysics ? "YES" : "NO");
-        _performanceText.Append("GPU execution unavailable; draw values are CPU submission time");
+            performance.ParallelWorkerCountThisFrame);
+        _performanceText.Append("GPU instanced 4D projection; draw values are CPU submission time");
     }
 
     private void AppendPerformanceMetric(
@@ -549,7 +557,7 @@ public sealed class DebugOverlayRenderer : IDisposable
             body.Position.Z,
             body.Position.W);
         AppendFormat(
-            "           V ({0:0.00}, {1:0.00}, {2:0.00}, {3:0.00})  A ({4:0.00}, {5:0.00}, {6:0.00}, {7:0.00})\n",
+            "           V ({0:0.00}, {1:0.00}, {2:0.00}, {3:0.00})  A ({4:0.0000}, {5:0.0000}, {6:0.0000}, {7:0.0000})\n",
             body.Velocity.X,
             body.Velocity.Y,
             body.Velocity.Z,

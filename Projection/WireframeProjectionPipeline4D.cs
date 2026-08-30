@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using HyperSpace.Diagnostics;
 using HyperSpace.Geometry;
 using HyperSpace.Mathematics;
 using HyperSpace.Transformations;
@@ -30,22 +31,64 @@ public sealed class WireframeProjectionPipeline4D
         PerspectiveProjector4D projector)
     {
         var vertices = new ProjectedVertex3D[sourceVertices.Count];
+        var objectRotation = objectTransform.Rotation.Prepare();
+        var objectScale = objectTransform.Scale;
+        var objectPosition = objectTransform.Position;
+        var cameraRotation = camera.Orientation.Prepare();
+        var cameraPosition = camera.Position;
+        var focalDistance = projector.FocalDistance;
+        var nearPlane = projector.NearPlane;
 
-        for (var index = 0; index < sourceVertices.Count; index++)
-        {
-            var worldPoint = objectTransform.TransformPoint(sourceVertices[index]);
-            var cameraPoint = camera.WorldToCameraSpace(worldPoint);
+        ParallelWork.ForRanges(
+            sourceVertices.Count,
+            minimumItemsPerWorker: 1_024,
+            (_, start, end) =>
+            {
+                for (var index = start; index < end; index++)
+                {
+                    var sourcePoint = sourceVertices[index];
+                    var worldPoint = objectRotation.Apply(sourcePoint * objectScale) + objectPosition;
+                    var cameraPoint = cameraRotation.ApplyInverse(worldPoint - cameraPosition);
 
-            vertices[index] = projector.TryProject(cameraPoint, out var projectedPoint)
-                ? new ProjectedVertex3D(
-                    projectedPoint,
-                    cameraPoint.W,
-                    sourceVertices[index].W,
-                    worldPoint.W,
-                    IsVisible: true)
-                : ProjectedVertex3D.Hidden(cameraPoint.W, sourceVertices[index].W, worldPoint.W);
-        }
+                    if (TryProject(cameraPoint, focalDistance, nearPlane, out var projectedPoint))
+                    {
+                        vertices[index] = new ProjectedVertex3D(
+                            projectedPoint,
+                            cameraPoint.W,
+                            sourcePoint.W,
+                            worldPoint.W,
+                            IsVisible: true);
+                    }
+                    else
+                    {
+                        vertices[index] = ProjectedVertex3D.Hidden(
+                            cameraPoint.W,
+                            sourcePoint.W,
+                            worldPoint.W);
+                    }
+                }
+            });
 
         return new Wireframe3D(vertices, sourceEdges);
+    }
+
+    private static bool TryProject(
+        Vector4D cameraPoint,
+        double focalDistance,
+        double nearPlane,
+        out Vector3D projectedPoint)
+    {
+        if (!cameraPoint.IsFinite || cameraPoint.W <= nearPlane)
+        {
+            projectedPoint = Vector3D.Zero;
+            return false;
+        }
+
+        var perspectiveScale = focalDistance / cameraPoint.W;
+        projectedPoint = new Vector3D(
+            cameraPoint.X * perspectiveScale,
+            cameraPoint.Y * perspectiveScale,
+            cameraPoint.Z * perspectiveScale);
+        return projectedPoint.IsFinite;
     }
 }

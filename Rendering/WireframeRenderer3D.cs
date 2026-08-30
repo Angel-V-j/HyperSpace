@@ -278,6 +278,7 @@ public sealed class WireframeRenderer3D : IDisposable
         EnsureTriangleVertexCapacity(count * 6);
         var maximumMass = 0.0;
         var maximumSpeed = 0.0;
+        var maximumAcceleration = 0.0;
         var maximumW = 0.0;
         if (nBodyMode)
         {
@@ -285,6 +286,7 @@ public sealed class WireframeRenderer3D : IDisposable
             {
                 maximumMass = Math.Max(maximumMass, bodies[index].Mass);
                 maximumSpeed = Math.Max(maximumSpeed, bodies[index].Velocity.Length);
+                maximumAcceleration = Math.Max(maximumAcceleration, bodies[index].Acceleration.Length);
                 maximumW = Math.Max(maximumW, Math.Abs(bodies[index].Position.W));
             }
         }
@@ -321,7 +323,7 @@ public sealed class WireframeRenderer3D : IDisposable
                     : selectedBody?.Id == body.Id
                         ? VisualizationPalette.PhysicsParticleSelected
                         : nBodyMode
-                            ? NBodyParticleColor(body, nBodyColorMode, maximumMass, maximumSpeed, maximumW)
+                            ? NBodyParticleColor(body, nBodyColorMode, maximumMass, maximumSpeed, maximumAcceleration, maximumW)
                             : PhysicsParticleColor(projected.WorldW);
             WriteBillboard(center, right, up, color, ref writtenVertexCount);
         }
@@ -975,6 +977,7 @@ public sealed class WireframeRenderer3D : IDisposable
         NBodyColorMode4D mode,
         double maximumMass,
         double maximumSpeed,
+        double maximumAcceleration,
         double maximumW)
     {
         if (mode == NBodyColorMode4D.WDepth)
@@ -986,12 +989,29 @@ public sealed class WireframeRenderer3D : IDisposable
                 (float)Math.Clamp(0.5 + (0.5 * normalized), 0.0, 1.0));
         }
 
-        var amount = mode == NBodyColorMode4D.Mass
-            ? maximumMass > 1e-12 ? Math.Sqrt(body.Mass / maximumMass) : 0.0
-            : maximumSpeed > 1e-12 ? body.Velocity.Length / maximumSpeed : 0.0;
-        return mode == NBodyColorMode4D.Mass
-            ? Color.Lerp(new Color(69, 132, 214), new Color(255, 210, 74), (float)amount)
-            : Color.Lerp(new Color(86, 215, 167), new Color(255, 91, 119), (float)amount);
+        var amount = mode switch
+        {
+            NBodyColorMode4D.Mass => maximumMass > 1e-12 ? Math.Sqrt(body.Mass / maximumMass) : 0.0,
+            NBodyColorMode4D.Speed => maximumSpeed > 1e-12 ? body.Velocity.Length / maximumSpeed : 0.0,
+            NBodyColorMode4D.Acceleration => maximumAcceleration > 1e-12 ? body.Acceleration.Length / maximumAcceleration : 0.0,
+            _ => 0.0
+        };
+        return mode switch
+        {
+            NBodyColorMode4D.Acceleration => Color.Lerp(
+                new Color(70, 100, 180),
+                new Color(200, 95, 215),
+                (float)amount),
+            NBodyColorMode4D.Mass => Color.Lerp(
+                new Color(69, 132, 214),
+                new Color(255, 210, 74),
+                (float)amount),
+            NBodyColorMode4D.Speed => Color.Lerp(
+                new Color(86, 215, 167),
+                new Color(255, 91, 119),
+                (float)amount),
+            _ => VisualizationPalette.PhysicsParticleSelected
+        };
     }
 
     private void DrawLineVertices(

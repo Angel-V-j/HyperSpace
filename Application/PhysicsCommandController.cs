@@ -336,6 +336,9 @@ internal sealed class PhysicsCommandController
             case TransformationCommand.ColorNBodyByMass:
                 _nBodyLab.SetColorMode(NBodyColorMode4D.Mass);
                 return true;
+            case TransformationCommand.ColorNBodyByAcceleration:
+                _nBodyLab.SetColorMode(NBodyColorMode4D.Acceleration);
+                return true;
             case TransformationCommand.ColorNBodyBySpeed:
                 _nBodyLab.SetColorMode(NBodyColorMode4D.Speed);
                 return true;

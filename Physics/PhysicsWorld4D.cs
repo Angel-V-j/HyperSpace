@@ -21,6 +21,7 @@ public sealed class PhysicsWorld4D
 
     private readonly List<PhysicsBody4D> _bodies = [];
     private Vector4D[] _accelerationBuffer = [];
+    private long[] _integrationCollisionCounts = [];
     private double _accumulator;
     private double _rateElapsed;
     private int _rateSteps;
@@ -51,6 +52,7 @@ public sealed class PhysicsWorld4D
     public double FixedDeltaTime { get; }
     public double TimeScale => SupportedTimeScales[_timeScaleIndex];
     public double AccumulatedSimulationTime => _accumulator;
+    public bool CatchUpLimitedLastUpdate { get; private set; }
 
     public double Restitution { get; private set; } = 0.8;
     public bool IsEnabled { get; private set; } = true;
@@ -102,6 +104,8 @@ public sealed class PhysicsWorld4D
         }
 
         _accumulator += realElapsedSeconds * TimeScale;
+        CatchUpLimitedLastUpdate = false;
+        var updateStartedAt = PerformanceProfiler.Timestamp();
         var executedSteps = 0;
         var collisionsBefore = AggregationCollisionCount;
         while (_accumulator >= FixedDeltaTime && executedSteps < MaximumStepsPerUpdate)
@@ -109,13 +113,17 @@ public sealed class PhysicsWorld4D
             ExecuteFixedStep();
             _accumulator -= FixedDeltaTime;
             executedSteps++;
+            // Preserve every fixed step, but return control to input/rendering when
+            // this update has consumed one frame's CPU budget. Debt remains visible
+            // in the accumulator instead of silently dropping simulated time.
+            if (PerformanceProfiler.ElapsedMillisecondsSince(updateStartedAt) >=
+                DefaultFixedDeltaTime * 1000.0)
+            {
+                break;
+            }
         }
 
-        if (executedSteps == MaximumStepsPerUpdate && _accumulator >= FixedDeltaTime)
-        {
-            // Prevent an unbounded catch-up loop after a debugger pause or stall.
-            _accumulator %= FixedDeltaTime;
-        }
+        CatchUpLimitedLastUpdate = _accumulator >= FixedDeltaTime;
 
         UpdateRates(
             realElapsedSeconds,
@@ -241,6 +249,7 @@ public sealed class PhysicsWorld4D
         var body = new PhysicsBody4D(_nextBodyId++, position, velocity, mass, isStatic, radius)
         {
             Acceleration = isStatic ? Vector4D.Zero : Gravity
+            //Acceleration = Gravity
         };
         _bodies.Add(body);
         SelectedBody = body;
@@ -329,15 +338,35 @@ public sealed class PhysicsWorld4D
         RefreshAccelerations();
 
         var integrationStartedAt = Performance.BeginPhase();
-        foreach (var body in _bodies)
+        var integrationWorkerCount = ParallelWork.WorkerCountFor(_bodies.Count, 2_048);
+        Performance.RecordParallelWork(integrationWorkerCount);
+        if (_integrationCollisionCounts.Length < integrationWorkerCount)
         {
-            body.Integrate(FixedDeltaTime);
-            if (!body.IsStatic && body.IsAlive &&
-                CollisionsEnabled &&
-                CollisionPlane.ResolveCollision(body, Restitution))
+            Array.Resize(ref _integrationCollisionCounts, integrationWorkerCount);
+        }
+        Array.Clear(_integrationCollisionCounts, 0, integrationWorkerCount);
+        ParallelWork.ForRanges(
+            _bodies.Count,
+            minimumItemsPerWorker: 2_048,
+            (workerIndex, start, end) =>
             {
-                CollisionCount++;
-            }
+                var workerCollisions = 0L;
+                for (var index = start; index < end; index++)
+                {
+                    var body = _bodies[index];
+                    body.Integrate(FixedDeltaTime);
+                    if (!body.IsStatic && body.IsAlive &&
+                        CollisionsEnabled &&
+                        CollisionPlane.ResolveCollision(body, Restitution))
+                    {
+                        workerCollisions++;
+                    }
+                }
+                _integrationCollisionCounts[workerIndex] = workerCollisions;
+            });
+        for (var workerIndex = 0; workerIndex < integrationWorkerCount; workerIndex++)
+        {
+            CollisionCount += _integrationCollisionCounts[workerIndex];
         }
         Performance.EndPhase(PerformancePhase.Integration, integrationStartedAt);
 
@@ -379,10 +408,16 @@ public sealed class PhysicsWorld4D
             Array.Resize(ref _accelerationBuffer, _bodies.Count);
         }
 
-        for (var index = 0; index < _bodies.Count; index++)
-        {
-            _accelerationBuffer[index] = _bodies[index].IsStatic ? Vector4D.Zero : Gravity;
-        }
+        ParallelWork.ForRanges(
+            _bodies.Count,
+            minimumItemsPerWorker: 2_048,
+            (_, start, end) =>
+            {
+                for (var index = start; index < end; index++)
+                {
+                    _accelerationBuffer[index] = _bodies[index].IsStatic ? Vector4D.Zero : Gravity;
+                }
+            });
 
         if (MutualGravityEnabled)
         {
@@ -395,13 +430,20 @@ public sealed class PhysicsWorld4D
             {
                 GravitySystem.AccumulateMeanField(_bodies, _accelerationBuffer);
             }
+            Performance.RecordParallelWork(GravitySystem.LastWorkerCount);
             Performance.EndPhase(PerformancePhase.Gravity, gravityStartedAt);
         }
 
-        for (var index = 0; index < _bodies.Count; index++)
-        {
-            _bodies[index].Acceleration = _accelerationBuffer[index];
-        }
+        ParallelWork.ForRanges(
+            _bodies.Count,
+            minimumItemsPerWorker: 2_048,
+            (_, start, end) =>
+            {
+                for (var index = start; index < end; index++)
+                {
+                    _bodies[index].Acceleration = _accelerationBuffer[index];
+                }
+            });
     }
 
     private void UpdateRates(double elapsed, int steps, int collisions)

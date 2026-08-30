@@ -605,9 +605,10 @@ internal sealed class TransformationControlLayout
             right,
             columnWidth,
             776);
-        SetThreeColumnRow(
+        SetFourColumnRow(
             TransformationCommand.ColorNBodyByW,
             TransformationCommand.ColorNBodyByMass,
+            TransformationCommand.ColorNBodyByAcceleration,
             TransformationCommand.ColorNBodyBySpeed,
             left,
             contentWidth,

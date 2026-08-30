@@ -268,6 +268,8 @@ public sealed class TransformationControlPanel : IDisposable
                     nBodyLab.ColorMode == NBodyColorMode4D.WDepth) ||
                 (button.Command == TransformationCommand.ColorNBodyByMass &&
                     nBodyLab.ColorMode == NBodyColorMode4D.Mass) ||
+                (button.Command == TransformationCommand.ColorNBodyByAcceleration &&
+                    nBodyLab.ColorMode == NBodyColorMode4D.Acceleration) ||
                 (button.Command == TransformationCommand.ColorNBodyBySpeed &&
                     nBodyLab.ColorMode == NBodyColorMode4D.Speed) ||
                 (button.Command == TransformationCommand.DisableNBodyTrail &&
@@ -864,8 +866,8 @@ public sealed class TransformationControlPanel : IDisposable
             860,
             color);
         DrawLabel(
-            $"A ({body.Acceleration.X:0.00}, {body.Acceleration.Y:0.00}, " +
-            $"{body.Acceleration.Z:0.00}, {body.Acceleration.W:0.00})",
+            $"A ({body.Acceleration.X:0.0000}, {body.Acceleration.Y:0.0000}, " +
+            $"{body.Acceleration.Z:0.0000}, {body.Acceleration.W:0.0000})",
             left,
             879,
             color);

@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using HyperSpace.Geometry;
 using HyperSpace.Physics;
@@ -30,7 +31,8 @@ internal sealed class NBodySelectionController
         Wireframe3D particleWireframe,
         IReadOnlyList<PhysicsBody4D> bodies,
         OrbitCamera3D camera,
-        double pointScale)
+        double pointScale,
+        Func<Wireframe3D>? projectionProvider = null)
     {
         var previousLeftPressed = _hasPreviousMouse &&
             _previousMouse.LeftButton == ButtonState.Pressed;
@@ -57,7 +59,7 @@ internal sealed class NBodySelectionController
                 selectedBody = NBodyScreenPicker.Pick(
                     mouse.Position,
                     sceneViewport,
-                    particleWireframe,
+                    projectionProvider?.Invoke() ?? particleWireframe,
                     bodies,
                     camera,
                     pointScale);

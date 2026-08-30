@@ -17,6 +17,8 @@ public readonly record struct Rotation4D(
 {
     public static Rotation4D Identity => default;
 
+    public PreparedRotation4D Prepare() => new(this);
+
     public Vector4D Apply(Vector4D vector)
     {
         vector = RotateInPlane(vector, RotationPlane4D.XY, XY);

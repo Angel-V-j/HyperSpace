@@ -21,6 +21,7 @@ public sealed class PerformanceProfiler
     private double _pendingSimulatedSeconds;
     private long _pendingCollisionCandidates;
     private int _pendingMerges;
+    private int _pendingParallelWorkers;
     private double _realRateElapsedSeconds;
     private long _realRatePhysicsSteps;
 
@@ -48,7 +49,8 @@ public sealed class PerformanceProfiler
     public int MainThreadId { get; }
     public int? LastPhysicsThreadId { get; private set; }
     public bool PhysicsRunsOnMainThread => LastPhysicsThreadId == MainThreadId;
-    public bool UsesParallelPhysics => false;
+    public bool UsesParallelPhysics => ParallelWorkerCountThisFrame > 1;
+    public int ParallelWorkerCountThisFrame { get; private set; }
 
     public double RealElapsedMilliseconds { get; private set; }
     public double SchedulerElapsedMilliseconds { get; private set; }
@@ -91,6 +93,7 @@ public sealed class PerformanceProfiler
         _pendingSimulatedSeconds = 0.0;
         _pendingCollisionCandidates = 0;
         _pendingMerges = 0;
+        _pendingParallelWorkers = 0;
         var now = Stopwatch.GetTimestamp();
         RealElapsedMilliseconds = _previousFrameStartedAt == 0L
             ? realElapsedSeconds * 1000.0
@@ -150,6 +153,14 @@ public sealed class PerformanceProfiler
         }
     }
 
+    public void RecordParallelWork(int workerCount)
+    {
+        if (_frameActive)
+        {
+            _pendingParallelWorkers = Math.Max(_pendingParallelWorkers, workerCount);
+        }
+    }
+
     public void CompleteFrame(
         double accumulatedSimulationSeconds,
         double simulationStepsPerSecond)
@@ -176,6 +187,7 @@ public sealed class PerformanceProfiler
         PhysicsStepsThisFrame = _pendingPhysicsSteps;
         CollisionCandidatesThisFrame = _pendingCollisionCandidates;
         MergesThisFrame = _pendingMerges;
+        ParallelWorkerCountThisFrame = _pendingParallelWorkers;
         _realRateElapsedSeconds += RealElapsedMilliseconds / 1000.0;
         _realRatePhysicsSteps += _pendingPhysicsSteps;
         if (_realRateElapsedSeconds >= 0.5)
@@ -210,6 +222,7 @@ public sealed class PerformanceProfiler
         PhysicsStepsThisFrame = 0;
         CollisionCandidatesThisFrame = 0;
         MergesThisFrame = 0;
+        ParallelWorkerCountThisFrame = 0;
         RealElapsedMilliseconds = 0.0;
         SchedulerElapsedMilliseconds = 0.0;
         FixedTimestepMilliseconds = 0.0;
@@ -272,6 +285,10 @@ public enum PerformancePhase
     PhysicsTotal,
     Gravity,
     CollisionDetection,
+    CollisionGrid,
+    CollisionCandidates,
+    CollisionSort,
+    CollisionResolution,
     Aggregation,
     Integration,
     TrailUpdate,

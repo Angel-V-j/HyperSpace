@@ -174,6 +174,7 @@ public enum TransformationCommand
     SelectNBodyApproximateGravity,
     ColorNBodyByW,
     ColorNBodyByMass,
+    ColorNBodyByAcceleration,
     ColorNBodyBySpeed,
     DisableNBodyTrail,
     EnableSelectedNBodyTrail

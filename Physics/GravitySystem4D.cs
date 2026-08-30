@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using HyperSpace.Diagnostics;
 using HyperSpace.Mathematics;
 
 namespace HyperSpace.Physics;
@@ -16,6 +17,7 @@ public sealed class GravitySystem4D
     public double GravitationalConstant { get; private set; } = DefaultGravitationalConstant;
 
     public double Softening { get; private set; } = DefaultSoftening;
+    public int LastWorkerCount { get; private set; } = 1;
 
     public void SetGravitationalConstant(double value)
     {
@@ -46,6 +48,7 @@ public sealed class GravitySystem4D
         IReadOnlyList<PhysicsBody4D> bodies,
         Vector4D[] accelerations)
     {
+        LastWorkerCount = 1;
         if (accelerations.Length < bodies.Count)
         {
             throw new ArgumentException("The acceleration buffer is too small.", nameof(accelerations));
@@ -57,6 +60,14 @@ public sealed class GravitySystem4D
         }
 
         var softeningSquared = Softening * Softening;
+        LastWorkerCount = bodies.Count >= 256
+            ? ParallelWork.WorkerCountFor(bodies.Count, 64)
+            : 1;
+        if (LastWorkerCount > 1)
+        {
+            AccumulatePairwiseByTarget(bodies, accelerations, softeningSquared);
+            return;
+        }
         for (var firstIndex = 0; firstIndex < bodies.Count - 1; firstIndex++)
         {
             var first = bodies[firstIndex];
@@ -91,6 +102,41 @@ public sealed class GravitySystem4D
         }
     }
 
+    private void AccumulatePairwiseByTarget(
+        IReadOnlyList<PhysicsBody4D> bodies,
+        Vector4D[] accelerations,
+        double softeningSquared)
+    {
+        // Each target repeats pair-distance work, but owns its acceleration and
+        // visits source indices in exactly the original accumulation order.
+        // No shared reductions or floating-point reorderings are introduced.
+        ParallelWork.ForRanges(bodies.Count, 64, (_, start, end) =>
+        {
+            for (var targetIndex = start; targetIndex < end; targetIndex++)
+            {
+                var target = bodies[targetIndex];
+                if (target.IsStatic) continue;
+                var acceleration = accelerations[targetIndex];
+                for (var sourceIndex = 0; sourceIndex < bodies.Count; sourceIndex++)
+                {
+                    if (sourceIndex == targetIndex) continue;
+                    var source = bodies[sourceIndex];
+                    var displacement = sourceIndex < targetIndex
+                        ? target.Position - source.Position
+                        : source.Position - target.Position;
+                    if (!TryInverseEffectiveDistanceFourth(displacement, softeningSquared, out var inverseFourth))
+                        continue;
+                    var commonFactor = GravitationalConstant * inverseFourth;
+                    var contribution = displacement * (commonFactor * source.Mass);
+                    acceleration = sourceIndex < targetIndex
+                        ? acceleration - contribution
+                        : acceleration + contribution;
+                }
+                accelerations[targetIndex] = acceleration;
+            }
+        });
+    }
+
     /// <summary>
     /// O(N) mean-field approximation: every body sees all other mass collapsed
     /// to its four-dimensional center of mass. This preserves global attraction
@@ -100,6 +146,7 @@ public sealed class GravitySystem4D
         IReadOnlyList<PhysicsBody4D> bodies,
         Vector4D[] accelerations)
     {
+        LastWorkerCount = 1;
         if (accelerations.Length < bodies.Count)
         {
             throw new ArgumentException("The acceleration buffer is too small.", nameof(accelerations));
@@ -123,27 +170,36 @@ public sealed class GravitySystem4D
             weightedPosition += body.Position * body.Mass;
         }
 
-        for (var index = 0; index < bodies.Count; index++)
-        {
-            var body = bodies[index];
-            if (!body.IsAlive || body.IsStatic)
+        var capturedTotalMass = totalMass;
+        var capturedWeightedPosition = weightedPosition;
+        LastWorkerCount = ParallelWork.WorkerCountFor(bodies.Count, 2_048);
+        ParallelWork.ForRanges(
+            bodies.Count,
+            minimumItemsPerWorker: 2_048,
+            (_, start, end) =>
             {
-                continue;
-            }
+                for (var index = start; index < end; index++)
+                {
+                    var body = bodies[index];
+                    if (!body.IsAlive || body.IsStatic)
+                    {
+                        continue;
+                    }
 
-            var otherMass = totalMass - body.Mass;
-            if (otherMass <= 0.0)
-            {
-                continue;
-            }
+                    var otherMass = capturedTotalMass - body.Mass;
+                    if (otherMass <= 0.0)
+                    {
+                        continue;
+                    }
 
-            var otherCenterOfMass =
-                (weightedPosition - (body.Position * body.Mass)) * (1.0 / otherMass);
-            accelerations[index] += AccelerationToward(
-                body.Position,
-                otherCenterOfMass,
-                otherMass);
-        }
+                    var otherCenterOfMass =
+                        (capturedWeightedPosition - (body.Position * body.Mass)) * (1.0 / otherMass);
+                    accelerations[index] += AccelerationToward(
+                        body.Position,
+                        otherCenterOfMass,
+                        otherMass);
+                }
+            });
     }
 
     public Vector4D AccelerationToward(

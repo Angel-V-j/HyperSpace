@@ -21,6 +21,19 @@ if (args.Contains("--profile-nbody", StringComparer.OrdinalIgnoreCase))
     return;
 }
 
+if (args.Contains("--profile-nbody-20k", StringComparer.OrdinalIgnoreCase))
+{
+    PerformanceBenchmarks.Run20k();
+    return;
+}
+
+if (args.Contains("--benchmark-render", StringComparer.OrdinalIgnoreCase))
+{
+    using var benchmark = new RenderingBenchmarkGame();
+    benchmark.Run();
+    return;
+}
+
 var checks = new (string Name, Action Run)[]
 {
     ("Tesseract topology", CheckTesseractTopology),
@@ -66,7 +79,12 @@ var checks = new (string Name, Action Run)[]
     ("Animated 4D transformations", CheckTransformationAnimation),
     ("Minimal UI button states", CheckUiButtonStates),
     ("Display layer state", CheckDisplayLayerState),
-    ("Interactive input mapping", CheckInputMapping)
+    ("Interactive input mapping", CheckInputMapping),
+    ("Parallel physics determinism", PerformanceChecks.CheckParallelDeterminism),
+    ("Parallel exact gravity accumulation order", PerformanceChecks.CheckExactGravity),
+    ("Parallel radix collision ordering", PerformanceChecks.CheckCollisionPairSort),
+    ("Prepared parallel projection equivalence", PerformanceChecks.CheckProjection),
+    ("Bounded fixed-step catch-up retains debt", PerformanceChecks.CheckFixedStepDebt)
 };
 
 try
@@ -2040,6 +2058,10 @@ static void ProfileNBodyScenario(
         $"effective={world.EffectiveGravityMode,-20} aggregation={(aggregationEnabled ? "ON " : "OFF")} " +
         $"physics={physics,8:0.000} gravity={AveragePerStep(PerformancePhase.Gravity),8:0.000} " +
         $"collision={AveragePerStep(PerformancePhase.CollisionDetection),8:0.000} " +
+        $"grid={AveragePerStep(PerformancePhase.CollisionGrid),7:0.000} " +
+        $"candidatesMs={AveragePerStep(PerformancePhase.CollisionCandidates),7:0.000} " +
+        $"sort={AveragePerStep(PerformancePhase.CollisionSort),7:0.000} " +
+        $"resolve={AveragePerStep(PerformancePhase.CollisionResolution),7:0.000} " +
         $"merge={AveragePerStep(PerformancePhase.Aggregation),8:0.000} " +
         $"integrate={AveragePerStep(PerformancePhase.Integration),8:0.000} " +
         $"trail={AveragePerStep(PerformancePhase.TrailUpdate),7:0.000} ms " +
