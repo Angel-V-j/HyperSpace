@@ -34,6 +34,12 @@ if (args.Contains("--benchmark-render", StringComparer.OrdinalIgnoreCase))
     return;
 }
 
+if (args.Contains("--audit-energy", StringComparer.OrdinalIgnoreCase))
+{
+    EnergyChecks.RunAudit();
+    return;
+}
+
 var checks = new (string Name, Action Run)[]
 {
     ("Tesseract topology", CheckTesseractTopology),
@@ -68,6 +74,7 @@ var checks = new (string Name, Action Run)[]
     ("N-body gravity quality modes", CheckNBodyGravityQualityModes),
     ("N-body gravity and aggregation toggles", CheckNBodyIndependentToggles),
     ("N-body lab reset and defaults", CheckNBodyLabLifecycle),
+    ("N-body total energy stability", EnergyChecks.CheckEnergyStability),
     ("N-body scale benchmark", CheckNBodyScaleBenchmark),
     ("Common geometry projection", CheckCommonGeometryProjection),
     ("4D reference grid", CheckReferenceGrid),
@@ -1242,8 +1249,8 @@ static void CheckPhysicsGravityAndWMovement()
     Require(yWorld.StepOnce(), "An enabled world must execute one manual fixed step.");
     RequireNear(falling.Velocity.Y, -9.8, 1e-12,
         "Y gravity must update Y velocity after one second.");
-    RequireNear(falling.Position.Y, -9.8, 1e-12,
-        "Semi-implicit Euler must move with the newly updated Y velocity.");
+    RequireNear(falling.Position.Y, -4.9, 1e-12,
+        "Leapfrog must reproduce constant-acceleration Y motion.");
 
     var wWorld = new PhysicsWorld4D(fixedDeltaTime: 0.5);
     wWorld.ToggleCollisions();
@@ -1254,8 +1261,8 @@ static void CheckPhysicsGravityAndWMovement()
     wWorld.StepOnce();
     RequireNear(wBody.Velocity.W, 0.1, 1e-12,
         "W gravity must change only the true fourth velocity component.");
-    RequireNear(wBody.Position.W, 4.05, 1e-12,
-        "W position must integrate from the updated W velocity.");
+    RequireNear(wBody.Position.W, 5.275, 1e-12,
+        "Leapfrog must reproduce constant-acceleration W motion.");
     RequireNear(wBody.Position.X, 0.0, 1e-12,
         "Pure W movement must not leak into X through projection or integration.");
 }

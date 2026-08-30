@@ -17,6 +17,7 @@ public sealed class GravitySystem4D
     public double GravitationalConstant { get; private set; } = DefaultGravitationalConstant;
 
     public double Softening { get; private set; } = DefaultSoftening;
+    public double MeanFieldRadius { get; private set; }
     public int LastWorkerCount { get; private set; } = 1;
 
     public void SetGravitationalConstant(double value)
@@ -37,6 +38,35 @@ public sealed class GravitySystem4D
         }
 
         Softening = value;
+    }
+
+    public void ConfigureMeanField(IReadOnlyList<PhysicsBody4D> bodies)
+    {
+        var totalMass = 0.0;
+        var weightedPosition = Vector4D.Zero;
+        foreach (var body in bodies)
+        {
+            if (!body.IsAlive) continue;
+            totalMass += body.Mass;
+            weightedPosition += body.Position * body.Mass;
+        }
+
+        if (totalMass <= 0.0)
+        {
+            MeanFieldRadius = 0.0;
+            return;
+        }
+
+        var center = weightedPosition * (1.0 / totalMass);
+        var weightedRadiusSquared = 0.0;
+        foreach (var body in bodies)
+        {
+            if (body.IsAlive)
+            {
+                weightedRadiusSquared += body.Mass * (body.Position - center).LengthSquared;
+            }
+        }
+        MeanFieldRadius = Math.Sqrt(weightedRadiusSquared / totalMass);
     }
 
     /// <summary>
@@ -138,9 +168,10 @@ public sealed class GravitySystem4D
     }
 
     /// <summary>
-    /// O(N) mean-field approximation: every body sees all other mass collapsed
-    /// to its four-dimensional center of mass. This preserves global attraction
-    /// but deliberately omits local pair structure.
+    /// O(N) conservative mean-field approximation. The generated cloud is
+    /// represented by a smooth mass distribution centered on its global COM.
+    /// A uniform correction term is the COM derivative of the shared potential;
+    /// it makes the internal forces sum to zero instead of injecting momentum.
     /// </summary>
     public void AccumulateMeanField(
         IReadOnlyList<PhysicsBody4D> bodies,
@@ -170,8 +201,24 @@ public sealed class GravitySystem4D
             weightedPosition += body.Position * body.Mass;
         }
 
+        var centerOfMass = weightedPosition * (1.0 / totalMass);
+        var effectiveSofteningSquared =
+            (Softening * Softening) + (MeanFieldRadius * MeanFieldRadius);
+        var correction = Vector4D.Zero;
+        foreach (var body in bodies)
+        {
+            if (!body.IsAlive) continue;
+            var offset = body.Position - centerOfMass;
+            var effectiveDistanceSquared = offset.LengthSquared + effectiveSofteningSquared;
+            correction += offset *
+                (body.Mass / (effectiveDistanceSquared * effectiveDistanceSquared));
+        }
+        correction *= GravitationalConstant;
+
         var capturedTotalMass = totalMass;
-        var capturedWeightedPosition = weightedPosition;
+        var capturedCenterOfMass = centerOfMass;
+        var capturedEffectiveSofteningSquared = effectiveSofteningSquared;
+        var capturedCorrection = correction;
         LastWorkerCount = ParallelWork.WorkerCountFor(bodies.Count, 2_048);
         ParallelWork.ForRanges(
             bodies.Count,
@@ -186,18 +233,14 @@ public sealed class GravitySystem4D
                         continue;
                     }
 
-                    var otherMass = capturedTotalMass - body.Mass;
-                    if (otherMass <= 0.0)
-                    {
-                        continue;
-                    }
-
-                    var otherCenterOfMass =
-                        (capturedWeightedPosition - (body.Position * body.Mass)) * (1.0 / otherMass);
-                    accelerations[index] += AccelerationToward(
-                        body.Position,
-                        otherCenterOfMass,
-                        otherMass);
+                    var offset = body.Position - capturedCenterOfMass;
+                    var effectiveDistanceSquared =
+                        offset.LengthSquared + capturedEffectiveSofteningSquared;
+                    var inverseEffectiveDistanceFourth =
+                        1.0 / (effectiveDistanceSquared * effectiveDistanceSquared);
+                    accelerations[index] +=
+                        offset * (-GravitationalConstant * capturedTotalMass * inverseEffectiveDistanceFourth) +
+                        capturedCorrection;
                 }
             });
     }
@@ -212,6 +255,71 @@ public sealed class GravitySystem4D
             sourceMass,
             GravitationalConstant,
             Softening);
+
+    /// <summary>
+    /// Potential whose negative gradient produces
+    /// a = G*m*r/(r^2+epsilon^2)^2.
+    /// </summary>
+    public double PairPotentialEnergy(PhysicsBody4D first, PhysicsBody4D second)
+    {
+        var effectiveDistanceSquared =
+            (second.Position - first.Position).LengthSquared + (Softening * Softening);
+        if (!double.IsFinite(effectiveDistanceSquared) || effectiveDistanceSquared <= 0.0)
+        {
+            return 0.0;
+        }
+
+        return -GravitationalConstant * first.Mass * second.Mass /
+            (2.0 * effectiveDistanceSquared);
+    }
+
+    public double CalculateExactPotentialEnergy(IReadOnlyList<PhysicsBody4D> bodies)
+    {
+        var potential = 0.0;
+        for (var firstIndex = 0; firstIndex < bodies.Count - 1; firstIndex++)
+        {
+            var first = bodies[firstIndex];
+            if (!first.IsAlive) continue;
+            for (var secondIndex = firstIndex + 1; secondIndex < bodies.Count; secondIndex++)
+            {
+                var second = bodies[secondIndex];
+                if (second.IsAlive)
+                {
+                    potential += PairPotentialEnergy(first, second);
+                }
+            }
+        }
+        return potential;
+    }
+
+    /// <summary>
+    /// Shared potential whose gradient is the conservative mean-field force.
+    /// </summary>
+    public double CalculateMeanFieldPotentialEnergy(IReadOnlyList<PhysicsBody4D> bodies)
+    {
+        var totalMass = 0.0;
+        var weightedPosition = Vector4D.Zero;
+        foreach (var body in bodies)
+        {
+            if (!body.IsAlive) continue;
+            totalMass += body.Mass;
+            weightedPosition += body.Position * body.Mass;
+        }
+
+        if (totalMass <= 0.0) return 0.0;
+        var center = weightedPosition * (1.0 / totalMass);
+        var effectiveSofteningSquared =
+            (Softening * Softening) + (MeanFieldRadius * MeanFieldRadius);
+        var reciprocalSum = 0.0;
+        foreach (var body in bodies)
+        {
+            if (!body.IsAlive) continue;
+            var effectiveDistanceSquared =
+                (body.Position - center).LengthSquared + effectiveSofteningSquared;
+            reciprocalSum += body.Mass / effectiveDistanceSquared;
+        }
+        return -0.5 * GravitationalConstant * totalMass * reciprocalSum;
+    }
 
     public static Vector4D CalculateAcceleration(
         Vector4D targetPosition,

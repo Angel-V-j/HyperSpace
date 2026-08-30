@@ -53,6 +53,7 @@ public sealed class NBodyLab4D : IDisposable
             _world.ReplaceBodies(result.Bodies);
             _world.SetAggregationEnabled(AggregationEnabled);
             _world.SetMutualGravityEnabled(GravityEnabled);
+            _world.ResetEnergyReference();
 
             _generatedWorldVersion = _world.StateVersion;
             LastGeneration = result;

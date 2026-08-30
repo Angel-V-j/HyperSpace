@@ -518,6 +518,7 @@ public sealed class DebugOverlayRenderer : IDisposable
         if (nBodyLab.HasSystem)
         {
             var momentum = world.TotalMomentum;
+            var energy = world.EnergyDiagnostics;
             AppendFormat(
                 "N-body  gravity {0}/{1}  aggregation {2} /{3}  merges {4:N0} last {5} ({6:0.0}/s)\n",
                 world.RequestedGravityMode,
@@ -534,6 +535,13 @@ public sealed class DebugOverlayRenderer : IDisposable
                 momentum.Y,
                 momentum.Z,
                 momentum.W);
+            AppendFormat(
+                "Energy K {0:0.000}  U {1:0.000}  total {2:0.000}  dE {3:+0.000;-0.000;0.000}%{4}\n",
+                energy.KineticEnergy,
+                energy.PotentialEnergy,
+                energy.TotalEnergy,
+                energy.DriftPercent,
+                energy.IsConservativeModel ? string.Empty : " approx");
             AppendFormat(
                 "Average speed {0:0.000}  max mass {1:0.000}  max |W| {2:0.000}  physics {3:0.0} ms  {4:0.0} step/s\n",
                 world.AverageSpeed,

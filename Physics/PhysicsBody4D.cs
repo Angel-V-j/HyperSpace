@@ -79,4 +79,24 @@ public sealed class PhysicsBody4D
         Velocity += Acceleration * deltaTime;
         Position += Velocity * deltaTime;
     }
+
+    internal void BeginLeapfrogStep(double deltaTime)
+    {
+        if (IsStatic || !IsAlive)
+        {
+            Acceleration = Vector4D.Zero;
+            return;
+        }
+
+        Velocity += Acceleration * (0.5 * deltaTime);
+        Position += Velocity * deltaTime;
+    }
+
+    internal void CompleteLeapfrogStep(double deltaTime)
+    {
+        if (!IsStatic && IsAlive)
+        {
+            Velocity += Acceleration * (0.5 * deltaTime);
+        }
+    }
 }

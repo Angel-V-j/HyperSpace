@@ -30,6 +30,10 @@ public sealed class PhysicsWorld4D
     private int _spawnSequence;
     private int _timeScaleIndex = 3;
     private int _aggregationStepCounter;
+    private double _initialTotalEnergy = double.NaN;
+    private EnergyDiagnostics4D _cachedEnergyDiagnostics;
+    private long _energyDiagnosticsStep = long.MinValue;
+    private int _energyDiagnosticsStateVersion = -1;
 
     public PhysicsWorld4D(double fixedDeltaTime = DefaultFixedDeltaTime)
     {
@@ -88,6 +92,7 @@ public sealed class PhysicsWorld4D
     public double MaximumAbsoluteW => _bodies.Count == 0
         ? 0.0
         : _bodies.Max(body => Math.Abs(body.Position.W));
+    public EnergyDiagnostics4D EnergyDiagnostics => GetEnergyDiagnostics();
 
     public event Action? FixedStepCompleted;
 
@@ -169,6 +174,7 @@ public sealed class PhysicsWorld4D
     {
         MutualGravityEnabled = enabled;
         RefreshAccelerations();
+        ResetEnergyReference();
     }
 
     public void SetAggregationEnabled(bool enabled) => AggregationEnabled = enabled;
@@ -177,6 +183,7 @@ public sealed class PhysicsWorld4D
     {
         RequestedGravityMode = mode;
         RefreshAccelerations();
+        ResetEnergyReference();
     }
 
     public void SetAggregationCollisionInterval(int interval)
@@ -196,12 +203,14 @@ public sealed class PhysicsWorld4D
     {
         GravitySystem.SetGravitationalConstant(value);
         RefreshAccelerations();
+        ResetEnergyReference();
     }
 
     public void SetGravitySoftening(double value)
     {
         GravitySystem.SetSoftening(value);
         RefreshAccelerations();
+        ResetEnergyReference();
     }
 
     public void SetGravity(Vector4D gravity)
@@ -213,6 +222,7 @@ public sealed class PhysicsWorld4D
 
         Gravity = gravity;
         RefreshAccelerations();
+        ResetEnergyReference();
     }
 
     public void SetRestitution(double restitution)
@@ -295,9 +305,11 @@ public sealed class PhysicsWorld4D
         }
 
         SelectedBody = _bodies.Count == 0 ? null : _bodies[^1];
+        GravitySystem.ConfigureMeanField(_bodies);
         ResetCounters();
         StateVersion++;
         RefreshAccelerations();
+        InvalidateEnergyReference();
     }
 
     public int SpawnParticles(int count, Vector4D initialVelocity)
@@ -324,18 +336,19 @@ public sealed class PhysicsWorld4D
     public void Clear()
     {
         _bodies.Clear();
+        GravitySystem.ConfigureMeanField(_bodies);
         SelectedBody = null;
         _nextBodyId = 1;
         _spawnSequence = 0;
         ResetCounters();
         StateVersion++;
+        InvalidateEnergyReference();
     }
 
     private void ExecuteFixedStep()
     {
         var totalStartedAt = PerformanceProfiler.Timestamp();
         var profiledTotalStartedAt = Performance.BeginPhase();
-        RefreshAccelerations();
 
         var integrationStartedAt = Performance.BeginPhase();
         var integrationWorkerCount = ParallelWork.WorkerCountFor(_bodies.Count, 2_048);
@@ -354,7 +367,9 @@ public sealed class PhysicsWorld4D
                 for (var index = start; index < end; index++)
                 {
                     var body = _bodies[index];
-                    body.Integrate(FixedDeltaTime);
+                    // Kick-drift. Acceleration is valid at the current position;
+                    // every state/configuration mutation refreshes it.
+                    body.BeginLeapfrogStep(FixedDeltaTime);
                     if (!body.IsStatic && body.IsAlive &&
                         CollisionsEnabled &&
                         CollisionPlane.ResolveCollision(body, Restitution))
@@ -393,6 +408,24 @@ public sealed class PhysicsWorld4D
                 Performance.EndPhase(PerformancePhase.Aggregation, cleanupStartedAt);
             }
         }
+
+
+        // Re-evaluate the field at the drifted (and possibly merged) positions,
+        // then finish the second half-kick. This is velocity Verlet/leapfrog and
+        // requires the same one gravity evaluation per fixed step as before.
+        RefreshAccelerations();
+        var finalKickStartedAt = Performance.BeginPhase();
+        ParallelWork.ForRanges(
+            _bodies.Count,
+            minimumItemsPerWorker: 2_048,
+            (_, start, end) =>
+            {
+                for (var index = start; index < end; index++)
+                {
+                    _bodies[index].CompleteLeapfrogStep(FixedDeltaTime);
+                }
+            });
+        Performance.EndPhase(PerformancePhase.Integration, finalKickStartedAt);
 
         CompletedStepCount++;
         Performance.RecordPhysicsStep(FixedDeltaTime);
@@ -444,6 +477,75 @@ public sealed class PhysicsWorld4D
                     _bodies[index].Acceleration = _accelerationBuffer[index];
                 }
             });
+    }
+
+    public void ResetEnergyReference()
+    {
+        _initialTotalEnergy = CalculateCurrentEnergy().TotalEnergy;
+        InvalidateEnergyCache();
+    }
+
+    private EnergyDiagnostics4D GetEnergyDiagnostics()
+    {
+        // Exact potential is O(N^2), so update the overlay diagnostic at 4 Hz
+        // of simulated time rather than duplicating gravity work every frame.
+        const int diagnosticIntervalSteps = 15;
+        if (_energyDiagnosticsStateVersion == StateVersion &&
+            _energyDiagnosticsStep != long.MinValue &&
+            CompletedStepCount - _energyDiagnosticsStep < diagnosticIntervalSteps)
+        {
+            return _cachedEnergyDiagnostics;
+        }
+
+        var current = CalculateCurrentEnergy();
+        var hasReference = double.IsFinite(_initialTotalEnergy);
+        var drift = hasReference && Math.Abs(_initialTotalEnergy) > 1e-12
+            ? 100.0 * (current.TotalEnergy - _initialTotalEnergy) / Math.Abs(_initialTotalEnergy)
+            : 0.0;
+        _cachedEnergyDiagnostics = new EnergyDiagnostics4D(
+            current.KineticEnergy,
+            current.PotentialEnergy,
+            current.TotalEnergy,
+            hasReference ? _initialTotalEnergy : current.TotalEnergy,
+            drift,
+            hasReference,
+            true);
+        _energyDiagnosticsStep = CompletedStepCount;
+        _energyDiagnosticsStateVersion = StateVersion;
+        return _cachedEnergyDiagnostics;
+    }
+
+    private (double KineticEnergy, double PotentialEnergy, double TotalEnergy) CalculateCurrentEnergy()
+    {
+        var kinetic = TotalKineticEnergy;
+        var potential = 0.0;
+        if (MutualGravityEnabled)
+        {
+            potential = EffectiveGravityMode == GravityMode4D.Exact
+                ? GravitySystem.CalculateExactPotentialEnergy(_bodies)
+                : GravitySystem.CalculateMeanFieldPotentialEnergy(_bodies);
+        }
+
+        foreach (var body in _bodies)
+        {
+            if (body.IsAlive && !body.IsStatic)
+            {
+                potential -= body.Mass * Vector4D.Dot(Gravity, body.Position);
+            }
+        }
+        return (kinetic, potential, kinetic + potential);
+    }
+
+    private void InvalidateEnergyReference()
+    {
+        _initialTotalEnergy = double.NaN;
+        InvalidateEnergyCache();
+    }
+
+    private void InvalidateEnergyCache()
+    {
+        _energyDiagnosticsStep = long.MinValue;
+        _energyDiagnosticsStateVersion = -1;
     }
 
     private void UpdateRates(double elapsed, int steps, int collisions)
